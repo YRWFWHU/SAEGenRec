@@ -1,0 +1,19 @@
+dataset:
+  name: "amazon2015"
+  category: "Beauty"
+  raw_dir: "data/raw"
+
+processing:
+  kcore_threshold: 5
+  split_strategy: "loo"
+  max_seq_len: 20
+
+tokenizer:
+  name: "passthrough"
+
+embedding:
+  enabled: false
+
+output:
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"

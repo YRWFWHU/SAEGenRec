@@ -67,6 +67,21 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) saegenrec/dataset.py
 
+## Run data processing pipeline
+.PHONY: data-process
+data-process:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process configs/default.yaml
+
+## Generate text embeddings
+.PHONY: data-embed
+data-embed:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process configs/default.yaml --step embed
+
+## Download item images
+.PHONY: data-download-images
+data-download-images:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset download-images configs/default.yaml
+
 
 #################################################################################
 # Self Documenting Commands                                                     #

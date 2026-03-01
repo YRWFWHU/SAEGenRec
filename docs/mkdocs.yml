@@ -1,4 +1,32 @@
 site_name: SAEGenRec
-# 
 site_author: YRW
-# 
+site_description: Generative Recommendation 数据处理管道文档
+
+nav:
+  - 首页: index.md
+  - 快速开始: getting-started.md
+  - 数据管道: data-pipeline.md
+  - 配置参考: configuration.md
+  - API 参考: api.md
+
+theme:
+  name: material
+  language: zh
+  palette:
+    - scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: 切换深色模式
+    - scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: 切换浅色模式
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - codehilite
+  - toc:
+      permalink: true

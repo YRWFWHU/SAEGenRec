@@ -1,6 +1,6 @@
 dataset:
   name: "amazon2015"
-  category: "Baby"
+  category: "Beauty"
   raw_dir: "data/raw"
 
 processing:
@@ -8,22 +8,41 @@ processing:
   split_strategy: "loo"
   split_ratio: [0.8, 0.1, 0.1]
   max_seq_len: 20
-  num_negatives: 99
+  num_negatives: 49
   seed: 42
 
 tokenizer:
   name: "passthrough"
   params: {}
 
-embedding:
-  enabled: false
+semantic_embedding:
+  enabled: true
+  name: "sentence-transformer"
   model_name: "all-MiniLM-L6-v2"
   text_fields:
     - "title"
     - "brand"
-    - "categories"
+    - "description"
+    - "price"
+  normalize: false
   batch_size: 256
-  device: "cpu"
+  device: "cuda"
+
+collaborative_embedding:
+  enabled: true
+  name: "sasrec"
+  loss_type: "BPR"
+  hidden_size: 64
+  num_layers: 2
+  num_heads: 2
+  max_seq_len: 20
+  dropout: 0.2
+  learning_rate: 0.001
+  batch_size: 2048
+  num_epochs: 200
+  eval_top_k: [5, 10, 20]
+  device: "cuda"
+  seed: 42
 
 output:
   interim_dir: "data/interim"

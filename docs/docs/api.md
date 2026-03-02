@@ -5,7 +5,7 @@
 ```
 saegenrec.data
 ├── config              管道配置 dataclasses
-├── pipeline            管道编排器（两阶段架构）
+├── pipeline            管道编排器（两阶段 + 嵌入架构）
 ├── schemas             HuggingFace Dataset Feature 定义
 ├── loaders             数据加载器
 │   ├── base            DatasetLoader ABC + 注册表
@@ -22,8 +22,17 @@ saegenrec.data
 ├── tokenizers          商品 tokenizer
 │   ├── base            ItemTokenizer ABC + 注册表
 │   └── passthrough     恒等 tokenizer
-└── embeddings
-    └── text            文本嵌入生成
+└── embeddings          商品嵌入生成
+    ├── text            遗留: 文本嵌入（deprecated）
+    ├── semantic        语义嵌入子系统
+    │   ├── base            SemanticEmbedder ABC + 注册表
+    │   └── sentence_transformer  sentence-transformers 实现
+    └── collaborative   协同嵌入子系统
+        ├── base            CollaborativeEmbedder ABC + 注册表
+        ├── sasrec          SASRec embedder 实现
+        └── models          模型定义
+            ├── sasrec_model    SASRec nn.Module
+            └── metrics         推荐评估指标（Hit Rate, NDCG）
 ```
 
 ---
@@ -49,9 +58,11 @@ print(cfg.dataset.data_path)  # Path("data/raw/Amazon2015/Beauty")
 | `DatasetConfig` | `name`, `category`, `raw_dir` | 数据源定义 |
 | `ProcessingConfig` | `kcore_threshold`, `split_strategy`, `split_ratio`, `max_seq_len`, `num_negatives`, `seed` | 处理参数 |
 | `TokenizerConfig` | `name`, `params` | tokenizer 选择 |
-| `EmbeddingConfig` | `enabled`, `model_name`, `text_fields`, `batch_size`, `device` | 嵌入配置 |
+| `EmbeddingConfig` | `enabled`, `model_name`, `text_fields`, `batch_size`, `device` | 遗留嵌入配置（deprecated） |
+| `SemanticEmbeddingConfig` | `enabled`, `name`, `model_name`, `text_fields`, `normalize`, `batch_size`, `device` | 语义嵌入配置 |
+| `CollaborativeEmbeddingConfig` | `enabled`, `name`, `loss_type`, `hidden_size`, `num_layers`, `num_heads`, `max_seq_len`, `dropout`, `learning_rate`, `batch_size`, `num_epochs`, `eval_top_k`, `device`, `seed` | 协同嵌入配置 |
 | `OutputConfig` | `interim_dir`, `processed_dir` | 输出路径 |
-| `PipelineConfig` | `dataset`, `processing`, `tokenizer`, `embedding`, `output` | 顶层配置 |
+| `PipelineConfig` | `dataset`, `processing`, `tokenizer`, `embedding`, `semantic_embedding`, `collaborative_embedding`, `output` | 顶层配置 |
 
 ---
 
@@ -272,16 +283,91 @@ interactions = loader.load_interactions(Path("data/raw/Amazon2015/Beauty"))
 
 ## `saegenrec.data.embeddings`
 
-### `generate_text_embeddings(item_metadata_dir, item_id_map_dir, output_dir, model_name, text_fields, batch_size, device)`
+嵌入模块包含两个解耦的子系统，各自拥有独立的 ABC 和注册表。
+
+### `SemanticEmbedder` (ABC)
+
+语义嵌入器抽象基类。使用预训练语言模型对商品元数据文本字段提取语义 embedding。
+
+**抽象方法**:
+
+#### `generate(data_dir: Path, output_dir: Path, config: dict) → Dataset`
+
+从阶段 1 的 `item_metadata/` 和 `item_id_map/` 生成语义 embedding。
+
+- **输入**: `data_dir` 下的 `item_metadata/`、`item_id_map/`
+- **输出**: 符合 `SEMANTIC_EMBEDDING_FEATURES` schema 的 Dataset，保存到 `output_dir/item_semantic_embeddings/`
+
+### `register_semantic_embedder(name: str)` / `get_semantic_embedder(name: str) → SemanticEmbedder`
+
+注册和获取语义 embedder 的辅助函数。
+
+### 内置语义 Embedder
+
+| 注册名 | 类 | 说明 |
+|--------|-----|------|
+| `sentence-transformer` | `SentenceTransformerEmbedder` | 基于 `sentence-transformers` 库 |
+
+---
+
+### `CollaborativeEmbedder` (ABC)
+
+协同嵌入器抽象基类。训练序列推荐模型，从 `nn.Embedding` 权重提取协同过滤 embedding。
+
+**抽象方法**:
+
+#### `generate(data_dir: Path, output_dir: Path, config: dict) → Dataset`
+
+从阶段 2 的 `train_sequences/`、`valid_sequences/`、`test_sequences/` 和 `item_id_map/` 训练模型并提取 embedding。
+
+- **输入**: `data_dir` 下的 split 数据和 ID 映射
+- **输出**: 符合 `COLLABORATIVE_EMBEDDING_FEATURES` schema 的 Dataset，保存到 `output_dir/item_collaborative_embeddings/`
+
+### `register_collaborative_embedder(name: str)` / `get_collaborative_embedder(name: str) → CollaborativeEmbedder`
+
+注册和获取协同 embedder 的辅助函数。
+
+### 内置协同 Embedder
+
+| 注册名 | 类 | 模型 | 说明 |
+|--------|-----|------|------|
+| `sasrec` | `SASRecEmbedder` | SASRec | 自注意力序列推荐，对齐 RecBole。使用 PyTorch Lightning 训练 |
+
+---
+
+### 遗留 API
+
+#### `generate_text_embeddings(item_metadata_dir, item_id_map_dir, output_dir, model_name, text_fields, batch_size, device)`
+
+> **Deprecated**: 请使用 `SemanticEmbedder` 替代。
 
 使用 sentence-transformers 为商品生成文本嵌入向量。
 
-**流程**:
+---
 
-1. 加载 `item_metadata` 和 `item_id_map`
-2. 对每个商品，将 `text_fields` 指定的字段拼接为文本
-3. 分批通过 sentence-transformers 模型编码
-4. 输出 `TEXT_EMBEDDING_FEATURES` schema 的 Dataset
+## `saegenrec.data.embeddings.collaborative.models`
+
+### `SASRec` (`nn.Module`)
+
+SASRec 自注意力序列推荐模型实现，对齐 RecBole 架构。
+
+**构造参数**: `num_items`, `hidden_size`, `max_seq_len`, `num_layers`, `num_heads`, `dropout`
+
+**关键方法**:
+
+| 方法 | 说明 |
+|------|------|
+| `forward(item_seq)` | 前向传播，返回序列表示 |
+| `bpr_loss(seq, pos, neg)` | 计算 BPR 损失 |
+| `ce_loss(seq, pos)` | 计算 CrossEntropy 损失 |
+| `predict(item_seq)` | 预测所有物品的分数（用于评估） |
+
+### 推荐评估指标
+
+| 函数 | 说明 |
+|------|------|
+| `hit_rate_at_k(scores, targets, k)` | 计算 Hit Rate@K |
+| `ndcg_at_k(scores, targets, k)` | 计算 NDCG@K |
 
 ---
 
@@ -298,7 +384,9 @@ interactions = loader.load_interactions(Path("data/raw/Amazon2015/Beauty"))
 | `INTERIM_SAMPLE_FEATURES` | augment 输出的中间样本（不含 token） |
 | `NEGATIVE_SAMPLE_FEATURES` | 负采样后的样本 |
 | `TRAINING_SAMPLE_FEATURES` | 遗留: 含 token 的最终训练样本 |
-| `TEXT_EMBEDDING_FEATURES` | 文本嵌入向量 |
+| `TEXT_EMBEDDING_FEATURES` | 遗留: 文本嵌入向量 |
+| `SEMANTIC_EMBEDDING_FEATURES` | 语义嵌入向量 |
+| `COLLABORATIVE_EMBEDDING_FEATURES` | 协同过滤嵌入向量 |
 
 ---
 
@@ -308,7 +396,7 @@ interactions = loader.load_interactions(Path("data/raw/Amazon2015/Beauty"))
 
 ```bash
 # 运行完整管道
-python -m saegenrec.dataset process <config.yaml> [--step <step_name>]...
+python -m saegenrec.dataset process <config.yaml> [--step <step_name>]... [--force]
 
 # 可用 CLI 覆盖参数
 python -m saegenrec.dataset process <config.yaml> \
@@ -321,6 +409,14 @@ python -m saegenrec.dataset process <config.yaml> \
     --num-negatives <n> \
     --seed <s>
 
+# 仅生成语义嵌入
+python -m saegenrec.dataset embed-semantic <config.yaml> [--force]
+
+# 仅生成协同嵌入
+python -m saegenrec.dataset embed-collaborative <config.yaml> [--force]
+
 # 下载商品图片
 python -m saegenrec.dataset download-images <config.yaml>
 ```
+
+**`--force` 标志**: 强制覆盖已存在的结果。默认行为是检测到已有结果时跳过。

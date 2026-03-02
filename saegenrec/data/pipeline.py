@@ -61,7 +61,11 @@ def _validate_prerequisites(steps: list[str], stage1_dir: Path, stage2_dir: Path
             )
 
 
-def run_pipeline(config: PipelineConfig, steps: list[str] | None = None) -> dict:
+def run_pipeline(
+    config: PipelineConfig,
+    steps: list[str] | None = None,
+    force: bool = False,
+) -> dict:
     """Run the data processing pipeline.
 
     Stage 1 (data filtering): load → filter → sequence
@@ -312,19 +316,30 @@ def run_pipeline(config: PipelineConfig, steps: list[str] | None = None) -> dict
         )
         stage2_stats.update(final_stats)
 
-    if "embed" in steps and config.embedding.enabled:
-        logger.info("=== Step: Text Embedding ===")
-        from saegenrec.data.embeddings.text import generate_text_embeddings
+    if "embed" in steps:
+        from dataclasses import asdict
 
-        generate_text_embeddings(
-            item_metadata_dir=stage1_dir / "item_metadata",
-            item_id_map_dir=stage1_dir / "item_id_map",
-            output_dir=stage1_dir,
-            model_name=config.embedding.model_name,
-            text_fields=config.embedding.text_fields,
-            batch_size=config.embedding.batch_size,
-            device=config.embedding.device,
-        )
+        if config.semantic_embedding.enabled:
+            logger.info("=== Step: Embed (Semantic) ===")
+            from saegenrec.data.embeddings.semantic.base import get_semantic_embedder
+            import saegenrec.data.embeddings.semantic.sentence_transformer  # noqa: F401
+
+            sem_cfg = asdict(config.semantic_embedding)
+            sem_cfg["force"] = force
+            embedder = get_semantic_embedder(config.semantic_embedding.name)
+            embedder.generate(stage1_dir, stage1_dir, sem_cfg)
+
+        if config.collaborative_embedding.enabled:
+            logger.info("=== Step: Embed (Collaborative) ===")
+            from saegenrec.data.embeddings.collaborative.base import (
+                get_collaborative_embedder,
+            )
+            import saegenrec.data.embeddings.collaborative.sasrec  # noqa: F401
+
+            collab_cfg = asdict(config.collaborative_embedding)
+            collab_cfg["force"] = force
+            embedder = get_collaborative_embedder(config.collaborative_embedding.name)
+            embedder.generate(stage2_dir, stage2_dir, collab_cfg)
 
     logger.success("Pipeline completed successfully")
     return {**stage1_stats, **stage2_stats}

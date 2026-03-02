@@ -1,0 +1,1 @@
+"""Collaborative embedding model implementations."""

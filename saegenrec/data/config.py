@@ -55,11 +55,44 @@ class TokenizerConfig:
 
 @dataclass
 class EmbeddingConfig:
+    """Legacy embedding config (deprecated — use SemanticEmbeddingConfig)."""
+
     enabled: bool = False
     model_name: str = "all-MiniLM-L6-v2"
     text_fields: list[str] = field(default_factory=lambda: ["title", "brand", "categories"])
     batch_size: int = 256
     device: str = "cpu"
+
+
+@dataclass
+class SemanticEmbeddingConfig:
+    enabled: bool = False
+    name: str = "sentence-transformer"
+    model_name: str = "all-MiniLM-L6-v2"
+    text_fields: list[str] = field(
+        default_factory=lambda: ["title", "brand", "description", "price"]
+    )
+    normalize: bool = False
+    batch_size: int = 256
+    device: str = "cpu"
+
+
+@dataclass
+class CollaborativeEmbeddingConfig:
+    enabled: bool = False
+    name: str = "sasrec"
+    loss_type: str = "CE"
+    hidden_size: int = 64
+    num_layers: int = 2
+    num_heads: int = 2
+    max_seq_len: int = 50
+    dropout: float = 0.5
+    learning_rate: float = 0.001
+    batch_size: int = 256
+    num_epochs: int = 200
+    eval_top_k: list[int] = field(default_factory=lambda: [10, 20])
+    device: str = "auto"
+    seed: int = 42
 
 
 @dataclass
@@ -80,18 +113,48 @@ class PipelineConfig:
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    semantic_embedding: SemanticEmbeddingConfig = field(
+        default_factory=SemanticEmbeddingConfig
+    )
+    collaborative_embedding: CollaborativeEmbeddingConfig = field(
+        default_factory=CollaborativeEmbeddingConfig
+    )
     output: OutputConfig = field(default_factory=OutputConfig)
 
 
 def load_config(config_path: Path | str) -> PipelineConfig:
     """Load pipeline configuration from a YAML file."""
+    import warnings
+
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
 
-    return PipelineConfig(
+    cfg = PipelineConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
         processing=ProcessingConfig(**raw.get("processing", {})),
         tokenizer=TokenizerConfig(**raw.get("tokenizer", {})),
         embedding=EmbeddingConfig(**raw.get("embedding", {})),
+        semantic_embedding=SemanticEmbeddingConfig(
+            **raw.get("semantic_embedding", {})
+        ),
+        collaborative_embedding=CollaborativeEmbeddingConfig(
+            **raw.get("collaborative_embedding", {})
+        ),
         output=OutputConfig(**raw.get("output", {})),
     )
+
+    if cfg.embedding.enabled and "semantic_embedding" not in raw:
+        warnings.warn(
+            "The 'embedding' config section is deprecated. "
+            "Use 'semantic_embedding' instead. "
+            "Auto-migrating: semantic_embedding.enabled=True with legacy settings.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        cfg.semantic_embedding.enabled = True
+        cfg.semantic_embedding.model_name = cfg.embedding.model_name
+        cfg.semantic_embedding.text_fields = cfg.embedding.text_fields
+        cfg.semantic_embedding.batch_size = cfg.embedding.batch_size
+        cfg.semantic_embedding.device = cfg.embedding.device
+
+    return cfg

@@ -83,3 +83,17 @@ TEXT_EMBEDDING_FEATURES = Features(
         "embedding": Sequence(Value("float32")),
     }
 )
+
+SEMANTIC_EMBEDDING_FEATURES = Features(
+    {
+        "item_id": Value("int32"),
+        "embedding": Sequence(Value("float32")),
+    }
+)
+
+COLLABORATIVE_EMBEDDING_FEATURES = Features(
+    {
+        "item_id": Value("int32"),
+        "embedding": Sequence(Value("float32")),
+    }
+)

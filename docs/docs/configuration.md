@@ -22,15 +22,34 @@ tokenizer:
   name: "passthrough"         # tokenizer 注册名
   params: {}                  # tokenizer 初始化参数
 
-embedding:
-  enabled: false              # 是否启用文本嵌入步骤
+semantic_embedding:
+  enabled: true               # 是否启用语义嵌入
+  name: "sentence-transformer" # 语义 embedder 注册名
   model_name: "all-MiniLM-L6-v2"  # sentence-transformers 模型名
   text_fields:                # 拼接为嵌入输入的元数据字段
     - "title"
     - "brand"
-    - "categories"
+    - "description"
+    - "price"
+  normalize: false            # L2 归一化（默认关闭）
   batch_size: 256             # 嵌入计算批次大小
   device: "cpu"               # 计算设备（cpu | cuda）
+
+collaborative_embedding:
+  enabled: true               # 是否启用协同嵌入
+  name: "sasrec"              # 协同 embedder 注册名
+  loss_type: "CE"             # 损失函数（CE | BPR）
+  hidden_size: 64             # Transformer 隐藏层维度
+  num_layers: 2               # Transformer 层数
+  num_heads: 2                # 多头注意力头数
+  max_seq_len: 20             # 模型输入序列最大长度
+  dropout: 0.5                # Dropout 比率
+  learning_rate: 0.001        # 学习率
+  batch_size: 256             # 训练批次大小
+  num_epochs: 200             # 训练轮数
+  eval_top_k: [10, 20]        # 评估 Top-K 列表
+  device: "auto"              # 计算设备（auto | cpu | cuda）
+  seed: 42                    # 随机种子
 
 output:
   interim_dir: "data/interim"       # 中间数据输出目录
@@ -81,15 +100,55 @@ output:
 | `name` | string | `"passthrough"` | tokenizer 注册名。`passthrough` 直接返回商品 ID 作为单 token |
 | `params` | dict | `{}` | 传递给 tokenizer 构造函数的额外参数 |
 
-### `embedding` — 文本嵌入
+### `semantic_embedding` — 语义嵌入
+
+使用预训练语言模型对商品元数据文本字段提取语义 embedding。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enabled` | bool | `false` | 是否在管道中执行嵌入步骤 |
+| `enabled` | bool | `false` | 是否启用语义嵌入 |
+| `name` | string | `"sentence-transformer"` | 语义 embedder 注册名 |
 | `model_name` | string | `"all-MiniLM-L6-v2"` | HuggingFace 上的 sentence-transformers 模型名 |
-| `text_fields` | list[string] | `["title", "brand", "categories"]` | 拼接为模型输入文本的元数据字段 |
+| `text_fields` | list[string] | `["title", "brand", "description", "price"]` | 拼接为模型输入文本的元数据字段。`price` 为数值时自动转为文本 |
+| `normalize` | bool | `false` | 是否对输出 embedding 做 L2 归一化 |
 | `batch_size` | int | `256` | 每批编码的商品数 |
 | `device` | string | `"cpu"` | 计算设备。GPU 加速使用 `"cuda"` |
+
+**常用模型**:
+
+| 模型 | 维度 | 说明 |
+|------|------|------|
+| `all-MiniLM-L6-v2` | 384 | 轻量级，适合快速验证 |
+| `Qwen/Qwen3-Embedding-0.6B` | 1024 | 高质量中文 + 英文嵌入，需 GPU |
+
+### `collaborative_embedding` — 协同嵌入
+
+通过训练序列推荐模型，从学习到的 `nn.Embedding` 权重中提取协同过滤 embedding。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用协同嵌入 |
+| `name` | string | `"sasrec"` | 协同 embedder 注册名 |
+| `loss_type` | string | `"CE"` | 损失函数类型。`"CE"` = CrossEntropy，`"BPR"` = BPR |
+| `hidden_size` | int | `64` | Transformer 隐藏层维度（即输出 embedding 维度） |
+| `num_layers` | int | `2` | Self-Attention 层数 |
+| `num_heads` | int | `2` | 多头注意力头数 |
+| `max_seq_len` | int | `50` | 模型输入序列最大长度 |
+| `dropout` | float | `0.5` | Dropout 比率 |
+| `learning_rate` | float | `0.001` | Adam 学习率 |
+| `batch_size` | int | `256` | 训练批次大小 |
+| `num_epochs` | int | `200` | 训练轮数 |
+| `eval_top_k` | list[int] | `[10, 20]` | 评估指标的 Top-K 值列表 |
+| `device` | string | `"auto"` | 计算设备。`"auto"` 自动选择可用 GPU |
+| `seed` | int | `42` | 随机种子 |
+
+**注意**: `max_seq_len` 与 `processing.max_seq_len` 独立。前者控制协同模型训练时截断序列的长度，后者控制滑动窗口增强时生成训练样本的历史长度。协同 embedder 直接消费 Stage 2 的 split 数据（`train_sequences/` 等），不受 `processing.max_seq_len` 影响。
+
+**训练过程**:
+
+- 每个 epoch 输出 `train_loss`
+- 在验证集和测试集上输出 `Hit Rate@K` 和 `NDCG@K` 指标
+- 使用梯度裁剪（`gradient_clip_val=5.0`）提高训练稳定性
 
 ### `output` — 输出路径
 
@@ -108,6 +167,10 @@ output:
 | `configs/examples/amazon2023_beauty.yaml` | amazon2023 | All_Beauty |
 | `configs/examples/amazon2023_fashion.yaml` | amazon2023 | Amazon_Fashion |
 
+## 配置兼容性
+
+旧版 `embedding` 配置节仍可使用，但已被标记为 **deprecated**。如果配置中存在 `embedding.enabled: true` 且未提供 `semantic_embedding` 节，系统将自动迁移设置并发出 `DeprecationWarning`。建议迁移到 `semantic_embedding`。
+
 ## 创建自定义配置
 
 只需指定与默认值不同的字段即可：
@@ -121,9 +184,15 @@ processing:
   kcore_threshold: 10
   max_seq_len: 50
 
-embedding:
+semantic_embedding:
   enabled: true
+  model_name: "Qwen/Qwen3-Embedding-0.6B"
   device: "cuda"
+
+collaborative_embedding:
+  enabled: true
+  loss_type: "BPR"
+  num_epochs: 100
 ```
 
 未指定的字段自动使用默认值。

@@ -79,9 +79,25 @@ python -m saegenrec.dataset process configs/examples/amazon2015_beauty.yaml \
 python -m saegenrec.dataset process configs/examples/amazon2015_beauty.yaml \
     --step negative_sampling
 
-# 仅执行文本嵌入（需先完成前序步骤）
+# 执行嵌入步骤（语义 + 协同，需先完成前序步骤）
 python -m saegenrec.dataset process configs/examples/amazon2015_beauty.yaml \
     --step embed
+```
+
+### 独立嵌入命令
+
+语义和协同嵌入也可通过独立 CLI 命令分别运行：
+
+```bash
+# 仅生成语义嵌入
+python -m saegenrec.dataset embed-semantic configs/default.yaml
+
+# 仅生成协同嵌入
+python -m saegenrec.dataset embed-collaborative configs/default.yaml
+
+# 强制重新生成（覆盖已有结果）
+python -m saegenrec.dataset embed-semantic configs/default.yaml --force
+python -m saegenrec.dataset embed-collaborative configs/default.yaml --force
 ```
 
 ### CLI 参数覆盖
@@ -104,7 +120,9 @@ python -m saegenrec.dataset process configs/default.yaml \
 make data-filter             # 阶段 1: 数据过滤（使用 default.yaml）
 make data-split              # 阶段 2: 数据划分 + 负采样
 make data-process            # 遗留: 完整管道
-make data-embed              # 仅文本嵌入步骤
+make data-embed              # 嵌入步骤（语义 + 协同，通过管道 embed 步骤）
+make data-embed-semantic     # 仅语义嵌入
+make data-embed-collaborative # 仅协同嵌入
 make data-download-images    # 下载商品图片
 ```
 
@@ -112,7 +130,7 @@ make data-download-images    # 下载商品图片
 
 ```bash
 make data-filter CONFIG=configs/examples/amazon2023_beauty.yaml
-make data-split CONFIG=configs/examples/amazon2023_beauty.yaml
+make data-embed-semantic CONFIG=configs/examples/amazon2023_beauty.yaml
 ```
 
 ## 输出结构
@@ -127,6 +145,7 @@ data/interim/{dataset}/{category}/               ← 阶段 1 输出
 ├── item_metadata/                                ← 商品元数据
 ├── user_id_map/                                  ← 原始 → 连续整数 ID 映射
 ├── item_id_map/                                  ← 同上
+├── item_semantic_embeddings/                     ← 语义嵌入向量
 ├── stats.json                                    ← 阶段 1 统计
 │
 └── {split_strategy}/                             ← 阶段 2 输出（按划分策略分目录）
@@ -136,10 +155,16 @@ data/interim/{dataset}/{category}/               ← 阶段 1 输出
     ├── train/                                    ← 训练集（InterimSample / NegativeSample）
     ├── valid/                                    ← 验证集
     ├── test/                                     ← 测试集
+    ├── item_collaborative_embeddings/            ← 协同嵌入向量
     └── stats.json                                ← 阶段 2 统计
 ```
 
 所有中间数据均以 HuggingFace Datasets（Apache Arrow 格式）存储，支持内存映射和高效随机访问。
+
+**嵌入输出**:
+
+- `item_semantic_embeddings/`: 位于阶段 1 输出目录（因为仅依赖 `item_metadata/`）
+- `item_collaborative_embeddings/`: 位于阶段 2 输出目录（因为依赖 split 数据）
 
 ## 下一步
 

@@ -2,12 +2,13 @@
 
 ## 概述
 
-数据管道将原始 Amazon 评论数据逐步转换为序列推荐训练样本。管道采用**两阶段架构**，由 `pipeline.py` 编排：
+数据管道将原始 Amazon 评论数据逐步转换为序列推荐训练样本，并生成商品 embedding 表示。管道采用**两阶段 + 嵌入**架构，由 `pipeline.py` 编排：
 
 - **阶段 1（数据过滤）**: `load → filter → sequence`，输出到 `data/interim/{dataset}/{category}/`
 - **阶段 2（数据划分）**: `split → augment → negative_sampling`，输出到 `data/interim/{dataset}/{category}/{split_strategy}/`
+- **嵌入生成**: `embed`，分别输出到 `item_semantic_embeddings/` 和 `item_collaborative_embeddings/`
 
-两阶段通过磁盘解耦，切换划分策略（LOO/TO）无需重跑阶段 1。
+两阶段通过磁盘解耦，切换划分策略（LOO/TO）无需重跑阶段 1。嵌入步骤消费阶段 1/2 产物，可独立运行。
 
 ## 处理流程
 
@@ -52,9 +53,13 @@ Raw Data (.json/.jsonl)
 ║                                                                       ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 
+嵌入步骤:
+  embed    — 生成商品语义 + 协同嵌入向量
+    ├── Semantic:  SemanticEmbedder → item_semantic_embeddings/
+    └── Collaborative: CollaborativeEmbedder → item_collaborative_embeddings/
+
 遗留步骤（显式调用）:
   generate — 附加 tokenizer 生成 TrainingSample（含 token 字段）
-  embed    — 生成商品文本嵌入向量
 ```
 
 ## 各步骤详解
@@ -173,24 +178,69 @@ augment 步骤与 tokenizer 完全解耦，输出 `INTERIM_SAMPLE_FEATURES` sche
 | `negative_item_ids` | Sequence(int32) | 负样本商品 ID 列表 |
 | `negative_item_titles` | Sequence(string) | 负样本商品标题列表 |
 
-### 遗留步骤: Generate + Embed
+### Embed — 嵌入生成
+
+嵌入步骤包含两个解耦的子系统，各自拥有独立的 ABC + 注册表。可通过 `--step embed` 同时运行，也可通过独立 CLI 命令分别运行。
+
+#### 语义嵌入（Semantic Embedding）
+
+**模块**: `saegenrec.data.embeddings.semantic`
+
+使用预训练语言模型对商品元数据文本字段提取语义 embedding。
+
+- 消费阶段 1 数据：`item_metadata/`、`item_id_map/`
+- 将配置中指定的文本字段（默认 `title`、`brand`、`description`、`price`）拼接后编码
+- `price` 为数值时自动转为文本格式
+- 所有文本字段为空时生成零向量
+- 仅对 K-core 过滤后有记录的物品生成，缺失物品跳过并记录警告
+- L2 归一化可配置，默认关闭
+- 输出到 `item_semantic_embeddings/`，schema 为 `SEMANTIC_EMBEDDING_FEATURES`
+
+**内置实现**:
+
+| 注册名 | 类 | 说明 |
+|--------|-----|------|
+| `sentence-transformer` | `SentenceTransformerEmbedder` | 基于 `sentence-transformers` 库，支持所有 HuggingFace 上的预训练模型 |
+
+#### 协同嵌入（Collaborative Embedding）
+
+**模块**: `saegenrec.data.embeddings.collaborative`
+
+通过 PyTorch Lightning 训练序列推荐模型，从学习到的 `nn.Embedding` 权重中提取协同过滤 embedding。
+
+- 消费阶段 2 数据：`train_sequences/`、`valid_sequences/`、`test_sequences/`、`item_id_map/`
+- 训练过程中每 epoch 输出 `train_loss`
+- 在验证集和测试集上输出 Hit Rate@K 和 NDCG@K 指标
+- 评估时自动运行时重建完整评估序列（将训练历史拼接到验证/测试目标前）
+- 输出到 `item_collaborative_embeddings/`，schema 为 `COLLABORATIVE_EMBEDDING_FEATURES`
+
+**内置实现**:
+
+| 注册名 | 类 | 模型 | 说明 |
+|--------|-----|------|------|
+| `sasrec` | `SASRecEmbedder` | SASRec | 自注意力序列推荐，对齐 RecBole 实现。支持 BPR / CrossEntropy 损失函数 |
+
+**SASRec 模型细节**:
+
+- Item embedding 使用 `padding_idx=0`（内部将 0-indexed ID 偏移 +1）
+- 可学习位置 embedding
+- 堆叠 SASRecBlock（MultiHeadAttention + FFN + LayerNorm + Dropout）
+- 联合因果 + 填充注意力掩码，使用 `-1e4`（而非 `-inf`）避免 NaN
+- RecBole 风格权重初始化：`normal_(0.0, 0.02)`
+- 梯度裁剪 `gradient_clip_val=5.0`
+
+#### 通用行为
+
+- 已存在结果时默认跳过，使用 `--force` 强制覆盖
+- 完成后输出统计信息（物品数、维度、耗时）
+
+### 遗留步骤: Generate
 
 #### Generate（遗留）
 
 **模块**: `saegenrec.data.processors.final`
 
 在 InterimSample 基础上通过 `ItemTokenizer` 附加 token 字段，生成 `TRAINING_SAMPLE_FEATURES` schema。需显式通过 `--step generate` 调用。
-
-#### Embed（可选）
-
-**模块**: `saegenrec.data.embeddings.text`
-
-使用 sentence-transformers 模型将商品文本信息编码为稠密向量。
-
-- 默认模型: `all-MiniLM-L6-v2`
-- 拼接字段: `title`, `brand`, `categories`（可配置）
-- 支持 CPU/CUDA 设备
-- 分批处理（默认 batch_size=256）
 
 ## 数据 Schema 总览
 
@@ -271,12 +321,26 @@ augment 步骤与 tokenizer 完全解耦，输出 `INTERIM_SAMPLE_FEATURES` sche
 | `target_item_tokens` | Sequence(int32) | 目标商品 token 序列 |
 | `target_item_title` | string | 目标商品标题 |
 
-### TextEmbedding
+### TextEmbedding（遗留）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `item_id` | int32 | 映射后商品 ID |
 | `embedding` | Sequence(float32) | 文本嵌入向量 |
+
+### SemanticEmbedding
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `item_id` | int32 | 映射后商品 ID |
+| `embedding` | Sequence(float32) | 语义嵌入向量 |
+
+### CollaborativeEmbedding
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `item_id` | int32 | 映射后商品 ID |
+| `embedding` | Sequence(float32) | 协同过滤嵌入向量 |
 
 ## 扩展指南
 
@@ -311,4 +375,34 @@ class MyTokenizer(ItemTokenizer):
 
     @property
     def token_length(self) -> int: ...
+```
+
+### 添加新的 SemanticEmbedder
+
+```python
+from saegenrec.data.embeddings.semantic.base import (
+    SemanticEmbedder,
+    register_semantic_embedder,
+)
+
+@register_semantic_embedder("my-embedder")
+class MyEmbedder(SemanticEmbedder):
+    def generate(self, data_dir, output_dir, config):
+        # 返回符合 SEMANTIC_EMBEDDING_FEATURES schema 的 Dataset
+        ...
+```
+
+### 添加新的 CollaborativeEmbedder
+
+```python
+from saegenrec.data.embeddings.collaborative.base import (
+    CollaborativeEmbedder,
+    register_collaborative_embedder,
+)
+
+@register_collaborative_embedder("my-model")
+class MyModelEmbedder(CollaborativeEmbedder):
+    def generate(self, data_dir, output_dir, config):
+        # 返回符合 COLLABORATIVE_EMBEDDING_FEATURES schema 的 Dataset
+        ...
 ```

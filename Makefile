@@ -84,10 +84,20 @@ data-filter:
 data-split:
 	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG) --step split --step augment --step negative_sampling
 
-## Generate text embeddings
+## Generate all embeddings (semantic + collaborative via pipeline)
 .PHONY: data-embed
 data-embed:
 	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG) --step embed
+
+## Generate semantic embeddings only
+.PHONY: data-embed-semantic
+data-embed-semantic:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset embed-semantic $(CONFIG)
+
+## Generate collaborative embeddings only
+.PHONY: data-embed-collaborative
+data-embed-collaborative:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset embed-collaborative $(CONFIG)
 
 ## Download item images
 .PHONY: data-download-images

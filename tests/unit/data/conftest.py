@@ -10,6 +10,7 @@ from datasets import Dataset
 
 from saegenrec.data.schemas import (
     INTERACTIONS_FEATURES,
+    INTERIM_SAMPLE_FEATURES,
     ITEM_METADATA_FEATURES,
     USER_SEQUENCES_FEATURES,
 )
@@ -342,7 +343,13 @@ def sample_config_path(tmp_path) -> Path:
     """Create a sample YAML config file."""
     config = {
         "dataset": {"name": "amazon2015", "category": "TestCat", "raw_dir": "data/raw"},
-        "processing": {"kcore_threshold": 3, "split_strategy": "loo", "max_seq_len": 10},
+        "processing": {
+            "kcore_threshold": 3,
+            "split_strategy": "loo",
+            "max_seq_len": 10,
+            "num_negatives": 99,
+            "seed": 42,
+        },
         "tokenizer": {"name": "passthrough", "params": {}},
         "embedding": {"enabled": False},
         "output": {"interim_dir": "data/interim", "processed_dir": "data/processed"},
@@ -353,3 +360,36 @@ def sample_config_path(tmp_path) -> Path:
     with open(config_file, "w") as f:
         yaml.dump(config, f)
     return config_file
+
+
+@pytest.fixture
+def synthetic_interim_samples_dataset() -> Dataset:
+    """InterimSample dataset based on 3 users, 5 items."""
+    return Dataset.from_dict(
+        {
+            "user_id": [0, 0, 1, 1, 2],
+            "history_item_ids": [[0, 1], [0, 1, 2], [0, 1], [0, 1, 2], [0, 1]],
+            "history_item_titles": [
+                ["Item 0", "Item 1"],
+                ["Item 0", "Item 1", "Item 2"],
+                ["Item 0", "Item 1"],
+                ["Item 0", "Item 1", "Item 2"],
+                ["Item 0", "Item 1"],
+            ],
+            "target_item_id": [2, 3, 2, 3, 2],
+            "target_item_title": ["Item 2", "Item 3", "Item 2", "Item 3", "Item 2"],
+        },
+        features=INTERIM_SAMPLE_FEATURES,
+    )
+
+
+@pytest.fixture
+def synthetic_all_item_ids() -> list[int]:
+    """Global item ID list for 5 items."""
+    return [0, 1, 2, 3, 4]
+
+
+@pytest.fixture
+def synthetic_item_titles_map() -> dict[int, str]:
+    """mapped_id → title mapping for 5 items."""
+    return {i: f"Item {i}" for i in range(5)}

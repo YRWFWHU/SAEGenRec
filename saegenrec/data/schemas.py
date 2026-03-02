@@ -55,6 +55,28 @@ TRAINING_SAMPLE_FEATURES = Features(
     }
 )
 
+INTERIM_SAMPLE_FEATURES = Features(
+    {
+        "user_id": Value("int32"),
+        "history_item_ids": Sequence(Value("int32")),
+        "history_item_titles": Sequence(Value("string")),
+        "target_item_id": Value("int32"),
+        "target_item_title": Value("string"),
+    }
+)
+
+NEGATIVE_SAMPLE_FEATURES = Features(
+    {
+        "user_id": Value("int32"),
+        "history_item_ids": Sequence(Value("int32")),
+        "history_item_titles": Sequence(Value("string")),
+        "target_item_id": Value("int32"),
+        "target_item_title": Value("string"),
+        "negative_item_ids": Sequence(Value("int32")),
+        "negative_item_titles": Sequence(Value("string")),
+    }
+)
+
 TEXT_EMBEDDING_FEATURES = Features(
     {
         "item_id": Value("int32"),

@@ -67,15 +67,27 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) saegenrec/dataset.py
 
-## Run data processing pipeline
+CONFIG ?= configs/default.yaml
+
+## Run data processing pipeline (legacy, all steps)
 .PHONY: data-process
 data-process:
-	$(PYTHON_INTERPRETER) -m saegenrec.dataset process configs/default.yaml
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG)
+
+## Stage 1: load → filter → sequence
+.PHONY: data-filter
+data-filter:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG) --step load --step filter --step sequence
+
+## Stage 2: split → augment → negative_sampling
+.PHONY: data-split
+data-split:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG) --step split --step augment --step negative_sampling
 
 ## Generate text embeddings
 .PHONY: data-embed
 data-embed:
-	$(PYTHON_INTERPRETER) -m saegenrec.dataset process configs/default.yaml --step embed
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset process $(CONFIG) --step embed
 
 ## Download item images
 .PHONY: data-download-images

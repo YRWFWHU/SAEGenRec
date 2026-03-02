@@ -28,9 +28,7 @@ def build_sequences(
         empty_seqs = Dataset.from_dict(
             {k: [] for k in USER_SEQUENCES_FEATURES}, features=USER_SEQUENCES_FEATURES
         )
-        empty_map = Dataset.from_dict(
-            {k: [] for k in ID_MAP_FEATURES}, features=ID_MAP_FEATURES
-        )
+        empty_map = Dataset.from_dict({k: [] for k in ID_MAP_FEATURES}, features=ID_MAP_FEATURES)
         return empty_seqs, empty_map, empty_map, {"avg_seq_length": 0.0}
 
     # Dedup by (user_id, item_id, timestamp)
@@ -77,9 +75,7 @@ def build_sequences(
         mapped_user_id = user_id_map[user_orig]
 
         sequences["user_id"].append(mapped_user_id)
-        sequences["item_ids"].append(
-            [item_id_map[iid] for iid in group["item_id"].tolist()]
-        )
+        sequences["item_ids"].append([item_id_map[iid] for iid in group["item_id"].tolist()])
         sequences["timestamps"].append(group["timestamp"].tolist())
         sequences["ratings"].append(group["rating"].tolist())
         sequences["review_texts"].append(group["review_text"].tolist())
@@ -97,8 +93,7 @@ def build_sequences(
     }
 
     logger.info(
-        f"Built {stats['num_users']} user sequences, "
-        f"avg length {stats['avg_seq_length']:.2f}"
+        f"Built {stats['num_users']} user sequences, avg length {stats['avg_seq_length']:.2f}"
     )
 
     return user_sequences_ds, user_id_map_ds, item_id_map_ds, stats

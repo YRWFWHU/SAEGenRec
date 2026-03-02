@@ -7,6 +7,8 @@ processing:
   kcore_threshold: 5
   split_strategy: "loo"
   max_seq_len: 20
+  num_negatives: 99
+  seed: 42
 
 tokenizer:
   name: "passthrough"

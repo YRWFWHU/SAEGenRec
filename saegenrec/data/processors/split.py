@@ -82,8 +82,7 @@ def _split_loo(user_sequences: Dataset) -> tuple[Dataset, Dataset, Dataset, dict
     }
 
     logger.info(
-        f"LOO split: {stats['train_users']} users "
-        f"(excluded {excluded_users} with <3 interactions)"
+        f"LOO split: {stats['train_users']} users (excluded {excluded_users} with <3 interactions)"
     )
 
     return (
@@ -153,8 +152,7 @@ def _split_to(
     }
 
     logger.info(
-        f"TO split ({ratio}): train={len(train_ds)}, "
-        f"valid={len(valid_ds)}, test={len(test_ds)}"
+        f"TO split ({ratio}): train={len(train_ds)}, valid={len(valid_ds)}, test={len(test_ds)}"
     )
 
     return train_ds, valid_ds, test_ds, stats

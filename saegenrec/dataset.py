@@ -167,17 +167,82 @@ def tokenize(
 def build_sft(
     config: Path = typer.Argument(..., help="YAML config file path"),
     force: bool = typer.Option(False, "--force", help="Force overwrite existing output"),
+    splits: Optional[str] = typer.Option(
+        None,
+        "--splits",
+        help="Comma-separated splits to build (e.g. 'train,valid,test'). "
+        "When omitted, builds a single merged dataset (legacy behaviour).",
+    ),
 ):
     """Build SFT instruction-tuning dataset from SID map and sequences."""
+    from dataclasses import asdict
+
+    from datasets import load_from_disk
+
     from saegenrec.data.config import load_config
-    from saegenrec.data.pipeline import run_pipeline
+    import saegenrec.modeling.sft  # noqa: F401
+    from saegenrec.modeling.sft.builder import SFTDatasetBuilder
 
     cfg = load_config(config)
     if not cfg.sft_builder.enabled:
         cfg.sft_builder.enabled = True
 
-    stats = run_pipeline(cfg, steps=["build-sft"], force=force)
-    logger.info(f"Build SFT stats: {stats}")
+    stage1_dir = cfg.output.interim_path(cfg.dataset.name, cfg.dataset.category)
+    stage2_dir = stage1_dir / cfg.processing.split_strategy
+    modeling_dir = cfg.output.modeling_path(cfg.dataset.name, cfg.dataset.category)
+
+    modeling_dir.mkdir(parents=True, exist_ok=True)
+    sid_map = load_from_disk(str(modeling_dir / "item_sid_map"))
+
+    builder = SFTDatasetBuilder()
+    sft_config = asdict(cfg.sft_builder)
+    split_list = [s.strip() for s in splits.split(",")] if splits else None
+
+    result = builder.build(stage1_dir, stage2_dir, sid_map, modeling_dir, sft_config, split_list)
+
+    if isinstance(result, dict):
+        for split_name, ds in result.items():
+            logger.info(f"Build SFT [{split_name}]: {len(ds)} samples")
+    else:
+        logger.info(f"Build SFT: {len(result)} samples")
+
+
+@app.command(name="train-sft")
+def train_sft(
+    config: Path = typer.Argument(..., help="YAML config file path"),
+    eval_only: bool = typer.Option(False, "--eval-only", help="Only run evaluation, no training"),
+    test_only: bool = typer.Option(False, "--test-only", help="Only run test set evaluation"),
+    checkpoint: Optional[str] = typer.Option(
+        None, "--checkpoint", help="Checkpoint path for eval-only/test-only mode"
+    ),
+):
+    """Run SFT training (or evaluation) for recommendation LLM fine-tuning."""
+    import yaml
+
+    from saegenrec.modeling.sft.config import SFTTrainingConfig
+    from saegenrec.modeling.sft.trainer import SFTRecTrainer
+
+    with open(config) as f:
+        raw = yaml.safe_load(f) or {}
+
+    sft_raw = raw.get("sft_training", {})
+    sft_cfg = SFTTrainingConfig.from_dict(sft_raw)
+    seed = raw.get("processing", {}).get("seed", 42)
+
+    trainer = SFTRecTrainer(sft_cfg, seed=seed)
+    trainer.setup()
+
+    if test_only:
+        if checkpoint:
+            logger.info(f"Test-only mode with checkpoint: {checkpoint}")
+        trainer.test(checkpoint_path=checkpoint)
+    elif eval_only:
+        if checkpoint:
+            logger.info(f"Eval-only mode with checkpoint: {checkpoint}")
+        metrics = trainer.evaluate(split="valid")
+        logger.info(f"Eval results: {metrics}")
+    else:
+        trainer.train()
 
 
 @app.command()

@@ -191,3 +191,181 @@ class TestSeqRecTaskBuilder:
         ds = SeqRecTaskBuilder().build(tmp_path, stage2, mock_sid_map, config)
 
         assert len(ds) == 2  # from augmented, not 1 from sequences
+
+
+class TestSeqRecEvalSplit:
+    """Tests for LOO eval split reconstruction (_build_eval_split)."""
+
+    @pytest.fixture
+    def loo_stage2(self, tmp_path: Path) -> Path:
+        """Simulate LOO split output: train has full history, valid/test have single item."""
+        stage2 = tmp_path / "stage2_loo"
+        stage2.mkdir()
+
+        # train_sequences: user history (all items except last two)
+        # User 0: full seq [0,1,2,3,4] → train=[0,1,2], valid_item=3, test_item=4
+        # User 1: full seq [1,2,3]     → train=[1],     valid_item=2, test_item=3
+        # User 2: full seq [0,2,4]     → train=[0],     valid_item=2, test_item=4
+        train_seqs = Dataset.from_dict(
+            {
+                "user_id": [0, 1, 2],
+                "item_ids": [[0, 1, 2], [1], [0]],
+                "timestamps": [[100, 200, 300], [150], [110]],
+                "ratings": [[5.0, 4.0, 3.0], [3.0], [4.0]],
+                "review_texts": [["r0", "r1", "r2"], ["r5"], ["r8"]],
+                "review_summaries": [["s0", "s1", "s2"], ["s5"], ["s8"]],
+            },
+            features=USER_SEQUENCES_FEATURES,
+        )
+        valid_seqs = Dataset.from_dict(
+            {
+                "user_id": [0, 1, 2],
+                "item_ids": [[3], [2], [2]],
+                "timestamps": [[400], [250], [410]],
+                "ratings": [[2.0], [5.0], [3.0]],
+                "review_texts": [["r3"], ["r6"], ["r9"]],
+                "review_summaries": [["s3"], ["s6"], ["s9"]],
+            },
+            features=USER_SEQUENCES_FEATURES,
+        )
+        test_seqs = Dataset.from_dict(
+            {
+                "user_id": [0, 1, 2],
+                "item_ids": [[4], [3], [4]],
+                "timestamps": [[500], [350], [510]],
+                "ratings": [[1.0], [4.0], [5.0]],
+                "review_texts": [["r4"], ["r7"], ["r10"]],
+                "review_summaries": [["s4"], ["s7"], ["s10"]],
+            },
+            features=USER_SEQUENCES_FEATURES,
+        )
+        train_seqs.save_to_disk(str(stage2 / "train_sequences"))
+        valid_seqs.save_to_disk(str(stage2 / "valid_sequences"))
+        test_seqs.save_to_disk(str(stage2 / "test_sequences"))
+        return stage2
+
+    def test_valid_split_uses_train_history(
+        self, loo_stage2, template_file, mock_sid_map, tmp_path
+    ):
+        """Valid split: history = train items, target = valid hold-out item."""
+        config = _make_config(template_file)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, loo_stage2, mock_sid_map, config, split="valid"
+        )
+
+        assert ds.features == SFT_FEATURES
+        assert len(ds) == 3
+        for row in ds:
+            assert row["task_type"] == "seqrec"
+            assert "<s_" in row["input"]
+            assert "<s_" in row["output"]
+
+    def test_test_split_includes_valid_item_in_history(
+        self, loo_stage2, template_file, mock_sid_map, tmp_path
+    ):
+        """Test split: history = train items + valid item, target = test item."""
+        config = _make_config(template_file)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, loo_stage2, mock_sid_map, config, split="test"
+        )
+
+        assert ds.features == SFT_FEATURES
+        assert len(ds) == 3
+        for row in ds:
+            assert row["task_type"] == "seqrec"
+            assert "<s_" in row["input"]
+            assert "<s_" in row["output"]
+
+    def test_valid_history_content_matches_train_items(
+        self, loo_stage2, template_file, mock_sid_map, tmp_path
+    ):
+        """Verify the valid split history actually contains train sequence SIDs."""
+        config = _make_config(template_file)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, loo_stage2, mock_sid_map, config, split="valid"
+        )
+        sid_lookup = {r["item_id"]: r["sid_tokens"] for r in mock_sid_map}
+
+        # User 0: train=[0,1,2], valid_target=3
+        # Find the sample whose output matches target=3's SID
+        target_3_sid = sid_lookup[3]
+        user0_sample = [r for r in ds if r["output"] == target_3_sid]
+        assert len(user0_sample) == 1
+        inp = user0_sample[0]["input"]
+        assert sid_lookup[0] in inp
+        assert sid_lookup[1] in inp
+        assert sid_lookup[2] in inp
+
+    def test_test_history_includes_valid_holdout(
+        self, loo_stage2, template_file, mock_sid_map, tmp_path
+    ):
+        """Verify test split history includes both train items and valid hold-out."""
+        config = _make_config(template_file)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, loo_stage2, mock_sid_map, config, split="test"
+        )
+        sid_lookup = {r["item_id"]: r["sid_tokens"] for r in mock_sid_map}
+
+        # User 0: train=[0,1,2], valid_item=3, test_target=4
+        # User 2: train=[0],     valid_item=2, test_target=4
+        # Both target item 4 — find the one with longer history (User 0)
+        target_4_sid = sid_lookup[4]
+        user0_candidates = [r for r in ds if r["output"] == target_4_sid]
+        assert len(user0_candidates) == 2
+        user0_sample = max(user0_candidates, key=lambda r: len(r["input"]))
+        inp = user0_sample["input"]
+        assert sid_lookup[0] in inp
+        assert sid_lookup[1] in inp
+        assert sid_lookup[2] in inp
+        assert sid_lookup[3] in inp  # valid hold-out included
+
+    def test_eval_split_missing_train_sequences_returns_empty(
+        self, tmp_path, template_file, mock_sid_map
+    ):
+        stage2 = tmp_path / "stage2_empty"
+        stage2.mkdir()
+        config = _make_config(template_file)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, stage2, mock_sid_map, config, split="valid"
+        )
+        assert len(ds) == 0
+
+    def test_eval_split_history_truncation(
+        self, tmp_path, template_file, mock_sid_map
+    ):
+        """Eval split respects max_history_len truncation."""
+        stage2 = tmp_path / "stage2_trunc_eval"
+        stage2.mkdir()
+
+        train_seqs = Dataset.from_dict(
+            {
+                "user_id": [0],
+                "item_ids": [[0, 1, 2, 3, 4, 0, 1, 2]],
+                "timestamps": [list(range(8))],
+                "ratings": [[1.0] * 8],
+                "review_texts": [[""] * 8],
+                "review_summaries": [[""] * 8],
+            },
+            features=USER_SEQUENCES_FEATURES,
+        )
+        valid_seqs = Dataset.from_dict(
+            {
+                "user_id": [0],
+                "item_ids": [[3]],
+                "timestamps": [[100]],
+                "ratings": [[5.0]],
+                "review_texts": [[""]],
+                "review_summaries": [[""]],
+            },
+            features=USER_SEQUENCES_FEATURES,
+        )
+        train_seqs.save_to_disk(str(stage2 / "train_sequences"))
+        valid_seqs.save_to_disk(str(stage2 / "valid_sequences"))
+
+        config = _make_config(template_file, max_history_len=3)
+        ds = SeqRecTaskBuilder().build(
+            tmp_path, stage2, mock_sid_map, config, split="valid"
+        )
+        assert len(ds) == 1
+        sid_count = ds[0]["input"].count("<s_a_")
+        assert sid_count == 3

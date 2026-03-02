@@ -135,6 +135,13 @@ class OutputConfig:
 
 
 @dataclass
+class SFTTrainingEnabled:
+    """Lightweight wrapper indicating whether SFT training is enabled in the YAML."""
+
+    enabled: bool = False
+
+
+@dataclass
 class PipelineConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
@@ -146,6 +153,7 @@ class PipelineConfig:
     )
     item_tokenizer: ItemTokenizerConfig = field(default_factory=ItemTokenizerConfig)
     sft_builder: SFTBuilderConfig = field(default_factory=SFTBuilderConfig)
+    sft_training: SFTTrainingEnabled = field(default_factory=SFTTrainingEnabled)
     output: OutputConfig = field(default_factory=OutputConfig)
 
 
@@ -155,6 +163,9 @@ def load_config(config_path: Path | str) -> PipelineConfig:
 
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
+
+    sft_training_raw = raw.get("sft_training", {})
+    sft_training_enabled = SFTTrainingEnabled(enabled=sft_training_raw.get("enabled", False))
 
     cfg = PipelineConfig(
         dataset=DatasetConfig(**raw.get("dataset", {})),
@@ -167,6 +178,7 @@ def load_config(config_path: Path | str) -> PipelineConfig:
         ),
         item_tokenizer=ItemTokenizerConfig(**raw.get("item_tokenizer", {})),
         sft_builder=SFTBuilderConfig(**raw.get("sft_builder", {})),
+        sft_training=sft_training_enabled,
         output=OutputConfig(**raw.get("output", {})),
     )
 

@@ -68,6 +68,63 @@ sft_builder:
   max_history_len: 20
   seed: 42
 
+sft_training:
+  enabled: false
+  model_name_or_path: "Qwen/Qwen2.5-0.5B-Instruct"
+  sft_data_dir: "data/processed/amazon2015/Beauty/sft_data"
+  sid_map_path: "data/processed/amazon2015/Beauty/item_sid_map"
+  output_dir: "models/sft"
+
+  tasks:
+    - "seqrec"
+    - "item2index"
+    - "index2item"
+  task_weights: {}
+
+  lora:
+    enabled: true
+    r: 8
+    alpha: 16
+    dropout: 0.05
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "k_proj"
+      - "o_proj"
+      - "gate_proj"
+      - "down_proj"
+      - "up_proj"
+    modules_to_save:
+      - "embed_tokens"
+      - "lm_head"
+
+  training:
+    num_epochs: 3
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 2.0e-5
+    lr_scheduler_type: "cosine"
+    warmup_ratio: 0.15
+    weight_decay: 0.01
+    max_seq_length: 512
+    fp16: false
+    bf16: true
+    gradient_checkpointing: true
+
+  evaluation:
+    eval_steps: 1000
+    rec_eval_steps: 3000
+    save_steps: 1000
+    save_total_limit: 3
+    eval_top_k: [1, 5, 10]
+    max_new_tokens: 32
+    constrained_decoding: true
+    do_test: true
+
+  logging:
+    report_to: "tensorboard"
+
 output:
   interim_dir: "data/interim"
   processed_dir: "data/processed"

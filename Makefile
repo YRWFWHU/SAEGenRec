@@ -114,6 +114,23 @@ data-build-sft:
 data-download-images:
 	$(PYTHON_INTERPRETER) -m saegenrec.dataset download-images configs/default.yaml
 
+CHECKPOINT ?=
+
+## Run SFT training
+.PHONY: sft-train
+sft-train:
+	accelerate launch -m saegenrec.dataset train-sft $(CONFIG)
+
+## Run SFT evaluation only
+.PHONY: sft-eval
+sft-eval:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset train-sft $(CONFIG) --eval-only --checkpoint $(CHECKPOINT)
+
+## Run SFT test set evaluation only
+.PHONY: sft-test
+sft-test:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset train-sft $(CONFIG) --test-only --checkpoint $(CHECKPOINT)
+
 
 #################################################################################
 # Self Documenting Commands                                                     #

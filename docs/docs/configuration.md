@@ -51,6 +51,30 @@ collaborative_embedding:
   device: "auto"              # 计算设备（auto | cpu | cuda）
   seed: 42                    # 随机种子
 
+item_tokenizer:
+  enabled: false                # 是否启用物品 Tokenization
+  name: "rqvae"                 # tokenizer 注册名（rqvae | rqkmeans）
+  num_codebooks: 4              # 码本层数
+  codebook_size: 256            # 每层码本大小
+  collision_strategy: "append_level"  # 碰撞消解策略
+  params:
+    hidden_dim: 256             # RQ-VAE 隐藏层维度
+    latent_dim: 64              # RQ-VAE 潜空间维度
+    lr: 0.001                   # 学习率
+    epochs: 100                 # 训练轮数
+    batch_size: 512             # 训练批次大小
+    device: "cuda"              # 计算设备
+
+sft_builder:
+  enabled: false                # 是否启用 SFT 数据构建
+  tasks:                        # 启用的 SFT 任务列表
+    - "seqrec"
+    - "item2index"
+    - "index2item"
+  template_file: "configs/templates/sft_prompts.yaml"  # Prompt 模板文件
+  max_history_len: 20           # SeqRec 任务最大历史长度
+  seed: 42                      # 模板随机采样种子
+
 output:
   interim_dir: "data/interim"       # 中间数据输出目录
   processed_dir: "data/processed"   # 最终数据输出目录
@@ -149,6 +173,66 @@ output:
 - 每个 epoch 输出 `train_loss`
 - 在验证集和测试集上输出 `Hit Rate@K` 和 `NDCG@K` 指标
 - 使用梯度裁剪（`gradient_clip_val=5.0`）提高训练稳定性
+
+### `item_tokenizer` — 物品 Tokenization
+
+将语义 embedding 映射为层次化语义 ID（SID）。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用物品 Tokenization |
+| `name` | string | `"rqvae"` | tokenizer 注册名。可选值: `rqvae`, `rqkmeans` |
+| `num_codebooks` | int | `4` | 码本层数（即 SID 基础长度） |
+| `codebook_size` | int | `256` | 每层码本中的向量数量 |
+| `collision_strategy` | string | `"append_level"` | 碰撞消解策略。`append_level` 追加层级去重，`sinkhorn` Sinkhorn 重分配 |
+| `sid_token_format` | string | `"<s_{level}_{code}>"` | SID token 字符串格式 |
+| `sid_begin_token` | string | `"<\|sid_begin\|>"` | SID 序列起始界定符 |
+| `sid_end_token` | string | `"<\|sid_end\|>"` | SID 序列结束界定符 |
+| `params` | dict | `{}` | 传递给具体 tokenizer 的额外参数 |
+
+**`params` 字段（RQ-VAE）**:
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `hidden_dim` | int | `256` | MLP 编码器/解码器隐藏层维度 |
+| `latent_dim` | int | `64` | 潜空间维度 |
+| `lr` | float | `0.001` | 学习率 |
+| `epochs` | int | `100` | 训练轮数 |
+| `batch_size` | int | `512` | 训练批次大小 |
+| `device` | string | `"cuda"` | 计算设备 |
+| `ema_decay` | float | `0.99` | EMA 码本更新的衰减率 |
+| `dead_code_threshold` | int | `2` | 死码替换的使用次数阈值 |
+
+**内置 Tokenizer 对比**:
+
+| | RQ-VAE | RQ-KMeans |
+|---|---|---|
+| 训练方式 | MLP 编码器 + 反向传播 | 逐层 KMeans 聚类 |
+| 需要 GPU | 是（推荐） | 否 |
+| 码本质量 | 高（可学习编码器） | 中（固定投影） |
+| 训练速度 | 较慢 | 较快 |
+| 均衡约束 | EMA + 死码替换 | 均衡 KMeans（FAISS） |
+
+### `sft_builder` — SFT 数据构建
+
+将推荐数据 + SID 映射转换为 LLM 指令微调数据。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用 SFT 数据构建 |
+| `tasks` | list[string] | `["seqrec", "item2index", "index2item"]` | 启用的 SFT 任务类型列表 |
+| `task_weights` | dict[string, float] | `{}` | 任务采样权重（0~1），空表示不降采样 |
+| `template_file` | string | `"configs/templates/sft_prompts.yaml"` | Prompt 模板文件路径 |
+| `max_history_len` | int | `20` | SeqRec 任务中用户历史序列的最大长度 |
+| `seed` | int | `42` | 模板随机采样和数据 shuffle 的种子 |
+
+**内置 SFT 任务**:
+
+| 任务 | 注册名 | 数据来源 | 说明 |
+|------|--------|---------|------|
+| 序列推荐 | `seqrec` | `train/`（滑动窗口增强数据） | 历史 SID 序列 → 目标 SID |
+| 物品→SID | `item2index` | `item_metadata/` + `item_sid_map/` | 物品标题 → SID |
+| SID→物品 | `index2item` | `item_metadata/` + `item_sid_map/` | SID → 物品标题 |
 
 ### `output` — 输出路径
 

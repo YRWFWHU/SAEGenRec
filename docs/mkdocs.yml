@@ -1,11 +1,12 @@
 site_name: SAEGenRec
 site_author: YRW
-site_description: Generative Recommendation 数据处理管道文档
+site_description: 生成式推荐系统研究框架 — 数据管道 + 建模子系统
 
 nav:
   - 首页: index.md
   - 快速开始: getting-started.md
   - 数据管道: data-pipeline.md
+  - 建模子系统: modeling.md
   - 配置参考: configuration.md
   - API 参考: api.md
 

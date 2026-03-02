@@ -97,3 +97,20 @@ COLLABORATIVE_EMBEDDING_FEATURES = Features(
         "embedding": Sequence(Value("float32")),
     }
 )
+
+SID_MAP_FEATURES = Features(
+    {
+        "item_id": Value("int32"),
+        "codes": Sequence(Value("int32")),
+        "sid_tokens": Value("string"),
+    }
+)
+
+SFT_FEATURES = Features(
+    {
+        "task_type": Value("string"),
+        "instruction": Value("string"),
+        "input": Value("string"),
+        "output": Value("string"),
+    }
+)

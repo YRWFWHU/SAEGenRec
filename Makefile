@@ -99,6 +99,16 @@ data-embed-semantic:
 data-embed-collaborative:
 	$(PYTHON_INTERPRETER) -m saegenrec.dataset embed-collaborative $(CONFIG)
 
+## Tokenize items (embedding → SID map)
+.PHONY: data-tokenize
+data-tokenize:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset tokenize $(CONFIG)
+
+## Build SFT instruction-tuning dataset
+.PHONY: data-build-sft
+data-build-sft:
+	$(PYTHON_INTERPRETER) -m saegenrec.dataset build-sft $(CONFIG)
+
 ## Download item images
 .PHONY: data-download-images
 data-download-images:

@@ -96,6 +96,29 @@ class CollaborativeEmbeddingConfig:
 
 
 @dataclass
+class ItemTokenizerConfig:
+    enabled: bool = False
+    name: str = "rqvae"
+    num_codebooks: int = 4
+    codebook_size: int = 256
+    collision_strategy: str = "append_level"
+    sid_token_format: str = "<s_{level}_{code}>"
+    sid_begin_token: str = "<|sid_begin|>"
+    sid_end_token: str = "<|sid_end|>"
+    params: dict = field(default_factory=dict)
+
+
+@dataclass
+class SFTBuilderConfig:
+    enabled: bool = False
+    tasks: list[str] = field(default_factory=lambda: ["seqrec", "item2index", "index2item"])
+    task_weights: dict[str, float] = field(default_factory=dict)
+    template_file: str = "configs/templates/sft_prompts.yaml"
+    max_history_len: int = 20
+    seed: int = 42
+
+
+@dataclass
 class OutputConfig:
     interim_dir: str = "data/interim"
     processed_dir: str = "data/processed"
@@ -106,6 +129,10 @@ class OutputConfig:
     def processed_path(self, dataset_name: str, category: str, split_strategy: str) -> Path:
         return Path(self.processed_dir) / dataset_name / category / split_strategy
 
+    def modeling_path(self, dataset_name: str, category: str) -> Path:
+        """Output path for modeling artifacts (tokenize/build-sft), without split_strategy."""
+        return Path(self.processed_dir) / dataset_name / category
+
 
 @dataclass
 class PipelineConfig:
@@ -113,12 +140,12 @@ class PipelineConfig:
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    semantic_embedding: SemanticEmbeddingConfig = field(
-        default_factory=SemanticEmbeddingConfig
-    )
+    semantic_embedding: SemanticEmbeddingConfig = field(default_factory=SemanticEmbeddingConfig)
     collaborative_embedding: CollaborativeEmbeddingConfig = field(
         default_factory=CollaborativeEmbeddingConfig
     )
+    item_tokenizer: ItemTokenizerConfig = field(default_factory=ItemTokenizerConfig)
+    sft_builder: SFTBuilderConfig = field(default_factory=SFTBuilderConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
 
@@ -134,12 +161,12 @@ def load_config(config_path: Path | str) -> PipelineConfig:
         processing=ProcessingConfig(**raw.get("processing", {})),
         tokenizer=TokenizerConfig(**raw.get("tokenizer", {})),
         embedding=EmbeddingConfig(**raw.get("embedding", {})),
-        semantic_embedding=SemanticEmbeddingConfig(
-            **raw.get("semantic_embedding", {})
-        ),
+        semantic_embedding=SemanticEmbeddingConfig(**raw.get("semantic_embedding", {})),
         collaborative_embedding=CollaborativeEmbeddingConfig(
             **raw.get("collaborative_embedding", {})
         ),
+        item_tokenizer=ItemTokenizerConfig(**raw.get("item_tokenizer", {})),
+        sft_builder=SFTBuilderConfig(**raw.get("sft_builder", {})),
         output=OutputConfig(**raw.get("output", {})),
     )
 

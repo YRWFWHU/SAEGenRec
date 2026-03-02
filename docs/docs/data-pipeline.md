@@ -2,13 +2,15 @@
 
 ## 概述
 
-数据管道将原始 Amazon 评论数据逐步转换为序列推荐训练样本，并生成商品 embedding 表示。管道采用**两阶段 + 嵌入**架构，由 `pipeline.py` 编排：
+数据管道将原始 Amazon 评论数据逐步转换为 LLM 可消费的 SFT 训练数据。管道采用**两阶段 + 嵌入 + 建模**架构，由 `pipeline.py` 编排：
 
 - **阶段 1（数据过滤）**: `load → filter → sequence`，输出到 `data/interim/{dataset}/{category}/`
 - **阶段 2（数据划分）**: `split → augment → negative_sampling`，输出到 `data/interim/{dataset}/{category}/{split_strategy}/`
 - **嵌入生成**: `embed`，分别输出到 `item_semantic_embeddings/` 和 `item_collaborative_embeddings/`
+- **物品 Tokenization**: `tokenize`，将 embedding 映射为层次化 SID，输出到 `data/processed/{dataset}/{category}/`
+- **SFT 数据构建**: `build-sft`，生成多任务指令数据，输出到 `data/processed/{dataset}/{category}/`
 
-两阶段通过磁盘解耦，切换划分策略（LOO/TO）无需重跑阶段 1。嵌入步骤消费阶段 1/2 产物，可独立运行。
+两阶段通过磁盘解耦，切换划分策略（LOO/TO）无需重跑阶段 1。嵌入、Tokenization 和 SFT 构建步骤可独立运行。
 
 ## 处理流程
 
@@ -57,6 +59,23 @@ Raw Data (.json/.jsonl)
   embed    — 生成商品语义 + 协同嵌入向量
     ├── Semantic:  SemanticEmbedder → item_semantic_embeddings/
     └── Collaborative: CollaborativeEmbedder → item_collaborative_embeddings/
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ 建模阶段 → data/processed/{dataset}/{category}/                          ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  Step: Tokenize                                                           ║
+║    ItemTokenizer(RQ-VAE/RQ-KMeans).generate()                            ║
+║    → item_sid_map/ + tokenizer_model/                                    ║
+║                         │                                                 ║
+║                         ▼                                                 ║
+║  Step: Build SFT                                                          ║
+║    SFTDatasetBuilder.build() → sft_data/                                 ║
+║    ├── SeqRec:     history SIDs → target SID（基于滑动窗口增强数据）       ║
+║    ├── Item2Index: item title → SID                                      ║
+║    └── Index2Item: SID → item title                                      ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
 
 遗留步骤（显式调用）:
   generate — 附加 tokenizer 生成 TrainingSample（含 token 字段）
@@ -234,6 +253,80 @@ augment 步骤与 tokenizer 完全解耦，输出 `INTERIM_SAMPLE_FEATURES` sche
 - 已存在结果时默认跳过，使用 `--force` 强制覆盖
 - 完成后输出统计信息（物品数、维度、耗时）
 
+### Tokenize — 物品 Tokenization
+
+**模块**: `saegenrec.modeling.tokenizers`
+
+将物品 embedding 映射为层次化离散语义 ID（SID）。SID 是生成式推荐的核心表示，使 LLM 能以离散 token 序列表示推荐结果。
+
+**流程**:
+
+1. 加载 `item_semantic_embeddings/` 中的 embedding
+2. 训练量化模型（RQ-VAE 或 RQ-KMeans）
+3. 将所有 embedding 编码为多层离散码
+4. 碰撞消解 — 确保每个物品获得唯一 SID
+5. 构建 SID 映射表（`item_sid_map/`）
+
+**内置 Tokenizer**:
+
+| 注册名 | 类 | 说明 |
+|--------|-----|------|
+| `rqvae` | `RQVAETokenizer` | MLP 编码器 + 残差向量量化 + MLP 解码器。使用 PyTorch Lightning 训练，支持 EMA 码本更新、死码替换、数据初始化 |
+| `rqkmeans` | `RQKMeansTokenizer` | 逐层残差 KMeans 聚类，基于 FAISS。支持均衡约束，无需 GPU |
+
+**碰撞消解策略**:
+
+| 策略 | 说明 |
+|------|------|
+| `append_level` | 碰撞物品追加一个消歧层级索引，SID 长度可变 |
+| `sinkhorn` | Sinkhorn-Knopp 最优传输重分配（当前回退到 append_level） |
+
+**SID 格式示例**:
+
+```
+<s_a_42><s_b_103><s_c_7><s_d_255>     ← 4 层无碰撞
+<s_a_42><s_b_103><s_c_7><s_d_255><s_e_0>  ← 5 层（碰撞消解后追加）
+```
+
+#### SIDMap 格式
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `item_id` | int32 | 映射后商品 ID |
+| `codes` | Sequence(int32) | 每层码本索引 |
+| `sid_tokens` | string | SID token 拼接字符串 |
+
+### Build SFT — SFT 数据构建
+
+**模块**: `saegenrec.modeling.sft`
+
+将推荐数据和 SID 映射转换为 LLM 可消费的 Alpaca 格式指令微调数据。
+
+**多任务支持**:
+
+| 任务 | 注册名 | 数据来源 | 输入 | 输出 |
+|------|--------|---------|------|------|
+| 序列推荐 | `seqrec` | 滑动窗口增强后的 `train/` 数据 | 历史交互 SID 序列 | 目标物品 SID |
+| 物品→SID | `item2index` | 全部物品（K-core 后） | 物品标题 | 物品 SID |
+| SID→物品 | `index2item` | 全部物品（K-core 后） | 物品 SID | 物品标题 |
+
+**Prompt 模板**:
+
+- 存储在 `configs/templates/sft_prompts.yaml`
+- 每种任务至少 5 个模板，运行时随机采样以增加多样性
+- 新增模板无需修改代码
+
+**输出格式**: Alpaca 指令格式
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_type` | string | 任务类型标识 |
+| `instruction` | string | 指令文本 |
+| `input` | string | 输入文本（含 SID 序列） |
+| `output` | string | 期望输出 |
+
+**SeqRec 数据源**: 优先使用 Stage 2 滑动窗口增强后的 `train/` 数据（`history_item_ids` → `target_item_id`），充分利用数据增强。仅在增强数据不存在时回退到 `train_sequences/`。
+
 ### 遗留步骤: Generate
 
 #### Generate（遗留）
@@ -342,6 +435,23 @@ augment 步骤与 tokenizer 完全解耦，输出 `INTERIM_SAMPLE_FEATURES` sche
 | `item_id` | int32 | 映射后商品 ID |
 | `embedding` | Sequence(float32) | 协同过滤嵌入向量 |
 
+### SIDMap
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `item_id` | int32 | 映射后商品 ID |
+| `codes` | Sequence(int32) | 各层码本索引 |
+| `sid_tokens` | string | SID token 拼接字符串 |
+
+### SFT
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_type` | string | 任务类型标识（seqrec / item2index / index2item） |
+| `instruction` | string | 指令文本 |
+| `input` | string | 输入文本 |
+| `output` | string | 期望输出 |
+
 ## 扩展指南
 
 ### 添加新的数据加载器
@@ -360,21 +470,39 @@ class MyDatasetLoader(DatasetLoader):
         ...
 ```
 
-### 添加新的 ItemTokenizer
+### 添加新的 ItemTokenizer（建模子系统）
 
 ```python
-from saegenrec.data.tokenizers.base import ItemTokenizer, register_tokenizer
+from saegenrec.modeling.tokenizers.base import ItemTokenizer, register_item_tokenizer
 
-@register_tokenizer("my_tokenizer")
+@register_item_tokenizer("my_tokenizer")
 class MyTokenizer(ItemTokenizer):
-    def tokenize(self, item_id: int) -> list[int]: ...
-    def detokenize(self, tokens: list[int]) -> int: ...
+    def train(self, semantic_embeddings_dir, collaborative_embeddings_dir, config): ...
+    def encode(self, embeddings): ...
+    def save(self, path): ...
+    def load(self, path): ...
 
     @property
-    def vocab_size(self) -> int: ...
+    def num_codebooks(self) -> int: ...
 
     @property
-    def token_length(self) -> int: ...
+    def codebook_size(self) -> int: ...
+```
+
+### 添加新的 SFT 任务类型
+
+```python
+from saegenrec.modeling.sft.base import SFTTaskBuilder, register_sft_task
+
+@register_sft_task("my_task")
+class MyTaskBuilder(SFTTaskBuilder):
+    @property
+    def task_type(self) -> str:
+        return "my_task"
+
+    def build(self, stage1_dir, stage2_dir, sid_map, config):
+        # 返回符合 SFT_FEATURES schema 的 Dataset
+        ...
 ```
 
 ### 添加新的 SemanticEmbedder

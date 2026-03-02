@@ -17,8 +17,10 @@ classifiers = [
 ]
 dependencies = [
     "datasets>=2.14",
+    "faiss-cpu>=1.7",
     "ipython",
     "jupyterlab",
+    "k-means-constrained>=0.7",
     "loguru",
     "matplotlib",
     "mkdocs",

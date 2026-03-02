@@ -21,6 +21,7 @@ from saegenrec.data.processors.split import split_data
 
 STAGE1_STEPS = ["load", "filter", "sequence"]
 STAGE2_STEPS = ["split", "augment", "negative_sampling"]
+MODELING_STEPS = ["tokenize", "build-sft"]
 ALL_STEPS = STAGE1_STEPS + STAGE2_STEPS
 LEGACY_STEPS = ["generate", "embed"]
 
@@ -36,7 +37,12 @@ def _build_item_titles(item_metadata: Dataset, item_id_map: Dataset) -> dict[int
     return item_titles
 
 
-def _validate_prerequisites(steps: list[str], stage1_dir: Path, stage2_dir: Path) -> None:
+def _validate_prerequisites(
+    steps: list[str],
+    stage1_dir: Path,
+    stage2_dir: Path,
+    modeling_dir: Path | None = None,
+) -> None:
     """Check that required upstream artifacts exist for the requested steps."""
     has_stage1 = any(s in steps for s in STAGE1_STEPS)
     has_stage2 = any(s in steps for s in STAGE2_STEPS)
@@ -58,6 +64,20 @@ def _validate_prerequisites(steps: list[str], stage1_dir: Path, stage2_dir: Path
         if not (stage2_dir / "train").exists():
             raise FileNotFoundError(
                 f"Augment artifacts not found at {stage2_dir}. Run 'augment' step first."
+            )
+
+    if "tokenize" in steps:
+        if not (stage1_dir / "item_semantic_embeddings").exists():
+            raise FileNotFoundError(
+                f"Semantic embeddings not found at {stage1_dir / 'item_semantic_embeddings'}. "
+                "Run 'embed' step first."
+            )
+
+    if "build-sft" in steps and "tokenize" not in steps:
+        if modeling_dir and not (modeling_dir / "item_sid_map").exists():
+            raise FileNotFoundError(
+                f"item_sid_map not found at {modeling_dir / 'item_sid_map'}. "
+                "Run 'tokenize' step first."
             )
 
 
@@ -86,8 +106,9 @@ def run_pipeline(
 
     stage1_dir = config.output.interim_path(config.dataset.name, config.dataset.category)
     stage2_dir = stage1_dir / config.processing.split_strategy
+    modeling_dir = config.output.modeling_path(config.dataset.name, config.dataset.category)
 
-    _validate_prerequisites(steps, stage1_dir, stage2_dir)
+    _validate_prerequisites(steps, stage1_dir, stage2_dir, modeling_dir)
 
     # Keep legacy dir for generate/embed backward compatibility
     legacy_dir = config.output.processed_path(
@@ -277,6 +298,66 @@ def run_pipeline(
         logger.info("Negative sampling complete for all splits")
 
     # ═══════════════════════════════════════
+    # Modeling steps: tokenize → build-sft
+    # ═══════════════════════════════════════
+
+    modeling_stats: dict = {}
+
+    if "tokenize" in steps:
+        logger.info("=== Step: Tokenize (Item → SID) ===")
+        from dataclasses import asdict
+
+        import saegenrec.modeling.tokenizers  # noqa: F401
+        from saegenrec.modeling.tokenizers.base import get_item_tokenizer
+
+        tok_cfg = config.item_tokenizer
+        semantic_dir = stage1_dir / "item_semantic_embeddings"
+        collab_dir = stage1_dir / "item_collaborative_embeddings"
+        collab_dir_resolved = collab_dir if collab_dir.exists() else None
+
+        output_exists = (modeling_dir / "item_sid_map").exists()
+        if output_exists and not force:
+            logger.info("item_sid_map already exists, skipping (use --force to overwrite)")
+        else:
+            modeling_dir.mkdir(parents=True, exist_ok=True)
+            tokenizer = get_item_tokenizer(
+                tok_cfg.name,
+                num_codebooks=tok_cfg.num_codebooks,
+                codebook_size=tok_cfg.codebook_size,
+                **tok_cfg.params,
+            )
+            gen_config = {
+                **asdict(tok_cfg),
+                **tok_cfg.params,
+            }
+            sid_map = tokenizer.generate(
+                semantic_dir, collab_dir_resolved, modeling_dir, gen_config
+            )
+            modeling_stats["tokenize_items"] = len(sid_map)
+            logger.info(f"Tokenize complete: {len(sid_map)} items → {modeling_dir}")
+
+    if "build-sft" in steps:
+        logger.info("=== Step: Build SFT Data ===")
+        from dataclasses import asdict
+
+        import saegenrec.modeling.sft  # noqa: F401
+        from saegenrec.modeling.sft.builder import SFTDatasetBuilder
+
+        sft_cfg = config.sft_builder
+
+        output_exists = (modeling_dir / "sft_data").exists()
+        if output_exists and not force:
+            logger.info("sft_data already exists, skipping (use --force to overwrite)")
+        else:
+            modeling_dir.mkdir(parents=True, exist_ok=True)
+            sid_map = load_from_disk(str(modeling_dir / "item_sid_map"))
+            builder = SFTDatasetBuilder()
+            sft_config = asdict(sft_cfg)
+            sft_ds = builder.build(stage1_dir, stage2_dir, sid_map, modeling_dir, sft_config)
+            modeling_stats["sft_samples"] = len(sft_ds)
+            logger.info(f"SFT build complete: {len(sft_ds)} samples → {modeling_dir}")
+
+    # ═══════════════════════════════════════
     # Legacy steps (backward compatibility)
     # ═══════════════════════════════════════
 
@@ -342,4 +423,4 @@ def run_pipeline(
             embedder.generate(stage2_dir, stage2_dir, collab_cfg)
 
     logger.success("Pipeline completed successfully")
-    return {**stage1_stats, **stage2_stats}
+    return {**stage1_stats, **stage2_stats, **modeling_stats}

@@ -31,18 +31,20 @@ class ProcessingConfig:
     split_strategy: str = "loo"
     split_ratio: list[float] = field(default_factory=lambda: [0.8, 0.1, 0.1])
     max_seq_len: int = 20
+    num_negatives: int = 99
+    seed: int | None = 42
 
     def __post_init__(self):
         if self.split_strategy not in ("loo", "to"):
-            raise ValueError(
-                f"split_strategy must be 'loo' or 'to', got '{self.split_strategy}'"
-            )
+            raise ValueError(f"split_strategy must be 'loo' or 'to', got '{self.split_strategy}'")
         if self.split_strategy == "to" and abs(sum(self.split_ratio) - 1.0) > 1e-6:
             raise ValueError(f"split_ratio must sum to 1.0, got {sum(self.split_ratio)}")
         if self.kcore_threshold < 1:
             raise ValueError(f"kcore_threshold must be >= 1, got {self.kcore_threshold}")
         if self.max_seq_len < 1:
             raise ValueError(f"max_seq_len must be >= 1, got {self.max_seq_len}")
+        if self.num_negatives < 1:
+            raise ValueError(f"num_negatives must be >= 1, got {self.num_negatives}")
 
 
 @dataclass

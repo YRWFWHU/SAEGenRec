@@ -8,6 +8,8 @@ processing:
   split_strategy: "loo"
   split_ratio: [0.8, 0.1, 0.1]
   max_seq_len: 20
+  num_negatives: 99
+  seed: 42
 
 tokenizer:
   name: "passthrough"

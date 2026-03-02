@@ -2,7 +2,12 @@
 
 ## 概述
 
-数据管道将原始 Amazon 评论数据逐步转换为 LLM 训练样本。整个流程由 `pipeline.py` 编排，按顺序执行 7 个步骤，每步的输出作为下一步的输入。
+数据管道将原始 Amazon 评论数据逐步转换为序列推荐训练样本。管道采用**两阶段架构**，由 `pipeline.py` 编排：
+
+- **阶段 1（数据过滤）**: `load → filter → sequence`，输出到 `data/interim/{dataset}/{category}/`
+- **阶段 2（数据划分）**: `split → augment → negative_sampling`，输出到 `data/interim/{dataset}/{category}/{split_strategy}/`
+
+两阶段通过磁盘解耦，切换划分策略（LOO/TO）无需重跑阶段 1。
 
 ## 处理流程
 
@@ -10,43 +15,46 @@
 Raw Data (.json/.jsonl)
     │
     ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 1: Load                                                        │
-│   DatasetLoader.load_interactions() → INTERACTIONS_FEATURES         │
-│   DatasetLoader.load_item_metadata() → ITEM_METADATA_FEATURES      │
-└─────────────────────────────────────┬───────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 2: Filter                                                      │
-│   kcore_filter(interactions, k=5) → 稠密化交互子集                  │
-└─────────────────────────────────────┬───────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 3: Sequence                                                    │
-│   build_sequences(filtered) → 用户行为序列 + ID 映射表              │
-└─────────────────────────────────────┬───────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 4: Split                                                       │
-│   split_data(sequences, "loo"/"to") → train/valid/test 序列         │
-└─────────────────────────────────────┬───────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 5-6: Augment + Generate                                        │
-│   sliding_window_augment(train) → 训练样本                          │
-│   convert_eval_split(valid/test) → 验证/测试样本                    │
-│   ItemTokenizer 为每条样本附加 token 序列                            │
-└─────────────────────────────────────┬───────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ Step 7: Embed (可选)                                                │
-│   generate_text_embeddings() → 商品文本向量                          │
-└─────────────────────────────────────────────────────────────────────┘
+╔═══════════════════════════════════════════════════════════════╗
+║ 阶段 1: 数据过滤 → data/interim/{dataset}/{category}/        ║
+╠═══════════════════════════════════════════════════════════════╣
+║                                                               ║
+║  Step 1: Load                                                 ║
+║    DatasetLoader.load_interactions() → INTERACTIONS_FEATURES   ║
+║    DatasetLoader.load_item_metadata() → ITEM_METADATA_FEATURES ║
+║                         │                                     ║
+║                         ▼                                     ║
+║  Step 2: Filter                                               ║
+║    kcore_filter(interactions, k=5) → 稠密化交互子集           ║
+║                         │                                     ║
+║                         ▼                                     ║
+║  Step 3: Sequence                                             ║
+║    build_sequences(filtered) → 用户行为序列 + ID 映射表       ║
+║                                                               ║
+╚════════════════════════════╤══════════════════════════════════╝
+                             │ 持久化到磁盘
+                             ▼
+╔═══════════════════════════════════════════════════════════════════════╗
+║ 阶段 2: 数据划分 → data/interim/{dataset}/{category}/{strategy}/     ║
+╠═══════════════════════════════════════════════════════════════════════╣
+║                                                                       ║
+║  Step 4: Split                                                        ║
+║    split_data(sequences, "loo"/"to") → train/valid/test 序列          ║
+║                         │                                             ║
+║                         ▼                                             ║
+║  Step 5: Augment                                                      ║
+║    sliding_window_augment(train) → InterimSample                      ║
+║    convert_eval_split(valid/test) → InterimSample                     ║
+║                         │                                             ║
+║                         ▼                                             ║
+║  Step 6: Negative Sampling                                            ║
+║    sample_negatives(samples) → NegativeSample                         ║
+║                                                                       ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+遗留步骤（显式调用）:
+  generate — 附加 tokenizer 生成 TrainingSample（含 token 字段）
+  embed    — 生成商品文本嵌入向量
 ```
 
 ## 各步骤详解
@@ -113,9 +121,11 @@ REPEAT:
 
 按全局时间戳排序所有交互，按比例（默认 `0.8:0.1:0.1`）划分到 train/valid/test。
 
-### Step 5-6: Augment + Generate — 数据增强与生成
+### Step 5: Augment — 数据增强
 
-**模块**: `saegenrec.data.processors.augment`, `saegenrec.data.processors.final`
+**模块**: `saegenrec.data.processors.augment`
+
+augment 步骤与 tokenizer 完全解耦，输出 `INTERIM_SAMPLE_FEATURES` schema（不含 token 字段）。
 
 #### 滑动窗口增强（训练集）
 
@@ -127,19 +137,51 @@ REPEAT:
 
 每个用户产生恰好一个样本，target 为序列中唯一的目标商品。
 
-#### 训练样本格式 (TrainingSample)
+#### InterimSample 格式
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `user_id` | int32 | 映射后用户 ID |
 | `history_item_ids` | Sequence(int32) | 历史商品 ID 序列 |
-| `history_item_tokens` | Sequence(Sequence(int32)) | 历史商品 token 序列 |
 | `history_item_titles` | Sequence(string) | 历史商品标题 |
 | `target_item_id` | int32 | 目标商品 ID |
-| `target_item_tokens` | Sequence(int32) | 目标商品 token 序列 |
 | `target_item_title` | string | 目标商品标题 |
 
-### Step 7: Embed — 文本嵌入（可选）
+### Step 6: Negative Sampling — 负采样
+
+**模块**: `saegenrec.data.processors.negative_sampling`
+
+为每条样本（train/valid/test）随机采样用户未交互过的商品作为负样本，用于重排序任务。
+
+**关键特性**:
+
+- 使用 `numpy.random.Generator` + 随机种子，保证可复现
+- 负样本严格排除用户的完整交互历史
+- 可用负样本不足时降级采样并记录 WARNING
+
+**配置**: `processing.num_negatives`（默认 99）, `processing.seed`（默认 42）
+
+#### NegativeSample 格式
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | int32 | 映射后用户 ID |
+| `history_item_ids` | Sequence(int32) | 历史商品 ID 序列 |
+| `history_item_titles` | Sequence(string) | 历史商品标题 |
+| `target_item_id` | int32 | 目标商品 ID |
+| `target_item_title` | string | 目标商品标题 |
+| `negative_item_ids` | Sequence(int32) | 负样本商品 ID 列表 |
+| `negative_item_titles` | Sequence(string) | 负样本商品标题列表 |
+
+### 遗留步骤: Generate + Embed
+
+#### Generate（遗留）
+
+**模块**: `saegenrec.data.processors.final`
+
+在 InterimSample 基础上通过 `ItemTokenizer` 附加 token 字段，生成 `TRAINING_SAMPLE_FEATURES` schema。需显式通过 `--step generate` 调用。
+
+#### Embed（可选）
 
 **模块**: `saegenrec.data.embeddings.text`
 
@@ -194,6 +236,40 @@ REPEAT:
 |------|------|------|
 | `original_id` | string | 原始 ID |
 | `mapped_id` | int32 | 映射后连续整数 ID |
+
+### InterimSample
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | int32 | 映射后用户 ID |
+| `history_item_ids` | Sequence(int32) | 历史商品 ID 序列 |
+| `history_item_titles` | Sequence(string) | 历史商品标题 |
+| `target_item_id` | int32 | 目标商品 ID |
+| `target_item_title` | string | 目标商品标题 |
+
+### NegativeSample
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | int32 | 映射后用户 ID |
+| `history_item_ids` | Sequence(int32) | 历史商品 ID 序列 |
+| `history_item_titles` | Sequence(string) | 历史商品标题 |
+| `target_item_id` | int32 | 目标商品 ID |
+| `target_item_title` | string | 目标商品标题 |
+| `negative_item_ids` | Sequence(int32) | 负样本商品 ID 列表 |
+| `negative_item_titles` | Sequence(string) | 负样本商品标题列表 |
+
+### TrainingSample（遗留）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | int32 | 映射后用户 ID |
+| `history_item_ids` | Sequence(int32) | 历史商品 ID 序列 |
+| `history_item_tokens` | Sequence(Sequence(int32)) | 历史商品 token 序列 |
+| `history_item_titles` | Sequence(string) | 历史商品标题 |
+| `target_item_id` | int32 | 目标商品 ID |
+| `target_item_tokens` | Sequence(int32) | 目标商品 token 序列 |
+| `target_item_title` | string | 目标商品标题 |
 
 ### TextEmbedding
 

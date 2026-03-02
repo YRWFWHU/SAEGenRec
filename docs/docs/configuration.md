@@ -15,6 +15,8 @@ processing:
   split_strategy: "loo"       # 划分策略（loo | to）
   split_ratio: [0.8, 0.1, 0.1]  # TO 策略的划分比例（仅 to 模式生效）
   max_seq_len: 20             # 训练样本最大历史长度
+  num_negatives: 99           # 每条样本的负采样数量
+  seed: 42                    # 负采样随机种子（null 为不固定）
 
 tokenizer:
   name: "passthrough"         # tokenizer 注册名
@@ -60,6 +62,8 @@ output:
 | `split_strategy` | string | `"loo"` | `loo` 或 `to` | 数据划分策略 |
 | `split_ratio` | list[float] | `[0.8, 0.1, 0.1]` | 总和为 1.0（仅 `to` 模式校验） | train:valid:test 比例 |
 | `max_seq_len` | int | `20` | ≥ 1 | 滑动窗口生成训练样本时的最大历史长度 |
+| `num_negatives` | int | `99` | ≥ 1 | 每条样本的负采样数量 |
+| `seed` | int \| None | `42` | — | 负采样随机种子，`null` 表示不固定 |
 
 **划分策略对比**:
 

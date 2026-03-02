@@ -100,6 +100,30 @@ python -m saegenrec.dataset embed-semantic configs/default.yaml --force
 python -m saegenrec.dataset embed-collaborative configs/default.yaml --force
 ```
 
+### 物品 Tokenization
+
+将语义 embedding 映射为层次化语义 ID（SID）：
+
+```bash
+# 训练 RQ-VAE 并生成 SID
+python -m saegenrec.dataset tokenize configs/default.yaml
+
+# 强制重新训练
+python -m saegenrec.dataset tokenize configs/default.yaml --force
+```
+
+### 构建 SFT 数据
+
+将推荐序列数据和 SID 映射转换为 LLM 可消费的指令微调数据：
+
+```bash
+# 构建 SFT 数据（SeqRec + Item2Index + Index2Item）
+python -m saegenrec.dataset build-sft configs/default.yaml
+
+# 强制重新构建
+python -m saegenrec.dataset build-sft configs/default.yaml --force
+```
+
 ### CLI 参数覆盖
 
 可在命令行临时覆盖配置文件中的参数：
@@ -117,13 +141,15 @@ python -m saegenrec.dataset process configs/default.yaml \
 ### 使用 Makefile
 
 ```bash
-make data-filter             # 阶段 1: 数据过滤（使用 default.yaml）
-make data-split              # 阶段 2: 数据划分 + 负采样
-make data-process            # 遗留: 完整管道
-make data-embed              # 嵌入步骤（语义 + 协同，通过管道 embed 步骤）
-make data-embed-semantic     # 仅语义嵌入
+make data-filter              # 阶段 1: 数据过滤（使用 default.yaml）
+make data-split               # 阶段 2: 数据划分 + 负采样
+make data-process             # 遗留: 完整管道
+make data-embed               # 嵌入步骤（语义 + 协同，通过管道 embed 步骤）
+make data-embed-semantic      # 仅语义嵌入
 make data-embed-collaborative # 仅协同嵌入
-make data-download-images    # 下载商品图片
+make data-tokenize            # 物品 Tokenization（RQ-VAE/RQ-KMeans → SID）
+make data-build-sft           # 构建 SFT 指令数据
+make data-download-images     # 下载商品图片
 ```
 
 所有 Make 目标通过 `CONFIG` 变量指定配置文件（默认 `configs/default.yaml`）：
@@ -152,11 +178,16 @@ data/interim/{dataset}/{category}/               ← 阶段 1 输出
     ├── train_sequences/                          ← 训练序列
     ├── valid_sequences/                          ← 验证序列
     ├── test_sequences/                           ← 测试序列
-    ├── train/                                    ← 训练集（InterimSample / NegativeSample）
+    ├── train/                                    ← 训练集（滑动窗口增强后）
     ├── valid/                                    ← 验证集
     ├── test/                                     ← 测试集
     ├── item_collaborative_embeddings/            ← 协同嵌入向量
     └── stats.json                                ← 阶段 2 统计
+
+data/processed/{dataset}/{category}/             ← 建模产物
+├── item_sid_map/                                ← 物品 SID 映射表
+├── tokenizer_model/                             ← 训练好的 tokenizer 模型文件
+└── sft_data/                                    ← SFT 指令微调数据集
 ```
 
 所有中间数据均以 HuggingFace Datasets（Apache Arrow 格式）存储，支持内存映射和高效随机访问。
@@ -169,5 +200,6 @@ data/interim/{dataset}/{category}/               ← 阶段 1 输出
 ## 下一步
 
 - 了解 [管道架构](data-pipeline.md) 中每个步骤的工作原理
+- 了解 [建模子系统](modeling.md) 中物品 Tokenization 和 SFT 数据构建的细节
 - 查看 [配置参考](configuration.md) 定制处理参数
-- 阅读 [API 参考](api.md) 了解如何扩展加载器或 tokenizer
+- 阅读 [API 参考](api.md) 了解如何扩展加载器、tokenizer 或 SFT 任务

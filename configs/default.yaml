@@ -44,6 +44,30 @@ collaborative_embedding:
   device: "cuda"
   seed: 42
 
+item_tokenizer:
+  enabled: false
+  name: "rqvae"
+  num_codebooks: 4
+  codebook_size: 256
+  collision_strategy: "append_level"
+  params:
+    hidden_dim: 256
+    latent_dim: 64
+    lr: 0.001
+    epochs: 100
+    batch_size: 512
+    device: "cuda"
+
+sft_builder:
+  enabled: false
+  tasks:
+    - "seqrec"
+    - "item2index"
+    - "index2item"
+  template_file: "configs/templates/sft_prompts.yaml"
+  max_history_len: 20
+  seed: 42
+
 output:
   interim_dir: "data/interim"
   processed_dir: "data/processed"

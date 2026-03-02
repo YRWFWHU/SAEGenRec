@@ -130,10 +130,7 @@ def embed_collaborative(
     stage2_dir = stage1_dir / cfg.processing.split_strategy
 
     if not (stage2_dir / "train_sequences").exists():
-        logger.error(
-            f"Stage 2 data not found at {stage2_dir}. "
-            "Run 'process --step split' first."
-        )
+        logger.error(f"Stage 2 data not found at {stage2_dir}. Run 'process --step split' first.")
         raise typer.Exit(code=1)
 
     embed_cfg = cfg.collaborative_embedding
@@ -147,6 +144,40 @@ def embed_collaborative(
 
     embedder = get_collaborative_embedder(embed_cfg.name)
     embedder.generate(stage2_dir, stage2_dir, config_dict)
+
+
+@app.command()
+def tokenize(
+    config: Path = typer.Argument(..., help="YAML config file path"),
+    force: bool = typer.Option(False, "--force", help="Force overwrite existing output"),
+):
+    """Run item tokenization (embedding → SID map)."""
+    from saegenrec.data.config import load_config
+    from saegenrec.data.pipeline import run_pipeline
+
+    cfg = load_config(config)
+    if not cfg.item_tokenizer.enabled:
+        cfg.item_tokenizer.enabled = True
+
+    stats = run_pipeline(cfg, steps=["tokenize"], force=force)
+    logger.info(f"Tokenize stats: {stats}")
+
+
+@app.command(name="build-sft")
+def build_sft(
+    config: Path = typer.Argument(..., help="YAML config file path"),
+    force: bool = typer.Option(False, "--force", help="Force overwrite existing output"),
+):
+    """Build SFT instruction-tuning dataset from SID map and sequences."""
+    from saegenrec.data.config import load_config
+    from saegenrec.data.pipeline import run_pipeline
+
+    cfg = load_config(config)
+    if not cfg.sft_builder.enabled:
+        cfg.sft_builder.enabled = True
+
+    stats = run_pipeline(cfg, steps=["build-sft"], force=force)
+    logger.info(f"Build SFT stats: {stats}")
 
 
 @app.command()

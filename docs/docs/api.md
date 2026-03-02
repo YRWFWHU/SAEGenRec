@@ -5,7 +5,7 @@
 ```
 saegenrec.data
 ├── config              管道配置 dataclasses
-├── pipeline            管道编排器（两阶段 + 嵌入架构）
+├── pipeline            管道编排器（两阶段 + 嵌入 + 建模架构）
 ├── schemas             HuggingFace Dataset Feature 定义
 ├── loaders             数据加载器
 │   ├── base            DatasetLoader ABC + 注册表
@@ -19,7 +19,7 @@ saegenrec.data
 │   ├── negative_sampling  负采样
 │   ├── final           遗留: 最终数据生成（含 tokenizer）
 │   └── images          图片下载
-├── tokenizers          商品 tokenizer
+├── tokenizers          商品 tokenizer（遗留，用于 generate 步骤）
 │   ├── base            ItemTokenizer ABC + 注册表
 │   └── passthrough     恒等 tokenizer
 └── embeddings          商品嵌入生成
@@ -33,6 +33,27 @@ saegenrec.data
         └── models          模型定义
             ├── sasrec_model    SASRec nn.Module
             └── metrics         推荐评估指标（Hit Rate, NDCG）
+
+saegenrec.modeling
+├── tokenizers          物品 Tokenization（embedding → SID）
+│   ├── base            ItemTokenizer ABC + 注册表
+│   ├── collision       碰撞消解策略
+│   ├── rqvae           RQ-VAE tokenizer
+│   ├── rqkmeans        RQ-KMeans tokenizer（FAISS）
+│   └── models
+│       └── rqvae_model     RQVAEModel（PyTorch Lightning）
+├── sft                 SFT 数据构建
+│   ├── base            SFTTaskBuilder ABC + 注册表
+│   ├── builder         SFTDatasetBuilder 编排器
+│   ├── seqrec          序列推荐任务
+│   ├── item2index      物品→SID 任务
+│   └── index2item      SID→物品 任务
+├── genrec              生成式推荐模型
+│   ├── base            GenRecModel ABC + 注册表
+│   └── config          GenRecConfig dataclass
+└── decoding            约束解码
+    ├── trie            SIDTrie 前缀树
+    └── constrained     SIDConstrainedLogitsProcessor
 ```
 
 ---
@@ -61,8 +82,10 @@ print(cfg.dataset.data_path)  # Path("data/raw/Amazon2015/Beauty")
 | `EmbeddingConfig` | `enabled`, `model_name`, `text_fields`, `batch_size`, `device` | 遗留嵌入配置（deprecated） |
 | `SemanticEmbeddingConfig` | `enabled`, `name`, `model_name`, `text_fields`, `normalize`, `batch_size`, `device` | 语义嵌入配置 |
 | `CollaborativeEmbeddingConfig` | `enabled`, `name`, `loss_type`, `hidden_size`, `num_layers`, `num_heads`, `max_seq_len`, `dropout`, `learning_rate`, `batch_size`, `num_epochs`, `eval_top_k`, `device`, `seed` | 协同嵌入配置 |
+| `ItemTokenizerConfig` | `enabled`, `name`, `num_codebooks`, `codebook_size`, `collision_strategy`, `sid_token_format`, `sid_begin_token`, `sid_end_token`, `params` | 物品 Tokenization 配置 |
+| `SFTBuilderConfig` | `enabled`, `tasks`, `task_weights`, `template_file`, `max_history_len`, `seed` | SFT 数据构建配置 |
 | `OutputConfig` | `interim_dir`, `processed_dir` | 输出路径 |
-| `PipelineConfig` | `dataset`, `processing`, `tokenizer`, `embedding`, `semantic_embedding`, `collaborative_embedding`, `output` | 顶层配置 |
+| `PipelineConfig` | `dataset`, `processing`, `tokenizer`, `embedding`, `semantic_embedding`, `collaborative_embedding`, `item_tokenizer`, `sft_builder`, `output` | 顶层配置 |
 
 ---
 
@@ -86,7 +109,7 @@ print(cfg.dataset.data_path)  # Path("data/raw/Amazon2015/Beauty")
 - `config` (`PipelineConfig`): 管道配置
 - `steps` (`list[str] | None`): 要执行的步骤列表。`None` 表示执行 `ALL_STEPS`
 
-**可用步骤**: `"load"`, `"filter"`, `"sequence"`, `"split"`, `"augment"`, `"negative_sampling"`, `"generate"`, `"embed"`
+**可用步骤**: `"load"`, `"filter"`, `"sequence"`, `"split"`, `"augment"`, `"negative_sampling"`, `"embed"`, `"tokenize"`, `"build-sft"`, `"generate"`（遗留）
 
 **返回**: 包含所有步骤统计信息的字典
 
@@ -387,6 +410,8 @@ SASRec 自注意力序列推荐模型实现，对齐 RecBole 架构。
 | `TEXT_EMBEDDING_FEATURES` | 遗留: 文本嵌入向量 |
 | `SEMANTIC_EMBEDDING_FEATURES` | 语义嵌入向量 |
 | `COLLABORATIVE_EMBEDDING_FEATURES` | 协同过滤嵌入向量 |
+| `SID_MAP_FEATURES` | 物品 SID 映射（item_id, codes, sid_tokens） |
+| `SFT_FEATURES` | SFT 指令数据（task_type, instruction, input, output） |
 
 ---
 
@@ -415,8 +440,214 @@ python -m saegenrec.dataset embed-semantic <config.yaml> [--force]
 # 仅生成协同嵌入
 python -m saegenrec.dataset embed-collaborative <config.yaml> [--force]
 
+# 物品 Tokenization（embedding → SID）
+python -m saegenrec.dataset tokenize <config.yaml> [--force]
+
+# 构建 SFT 指令数据
+python -m saegenrec.dataset build-sft <config.yaml> [--force]
+
 # 下载商品图片
 python -m saegenrec.dataset download-images <config.yaml>
 ```
 
 **`--force` 标志**: 强制覆盖已存在的结果。默认行为是检测到已有结果时跳过。
+
+---
+
+## `saegenrec.modeling` — 建模子系统
+
+公共 API 通过 `saegenrec.modeling` 导出：
+
+```python
+from saegenrec.modeling import ItemTokenizer, SFTDatasetBuilder, GenRecModel, SIDTrie
+```
+
+---
+
+### `saegenrec.modeling.tokenizers`
+
+#### `ItemTokenizer` (ABC)
+
+物品 Tokenization 的抽象基类，将 embedding 映射为层次化 SID。
+
+**抽象方法/属性**:
+
+| 方法/属性 | 签名 | 说明 |
+|----------|------|------|
+| `train` | `(semantic_embeddings_dir, collaborative_embeddings_dir, config) → dict` | 训练量化模型 |
+| `encode` | `(embeddings: Tensor) → Tensor` | 将 embedding 编码为离散码 |
+| `save` | `(path) → None` | 保存模型参数 |
+| `load` | `(path) → None` | 加载模型参数 |
+| `num_codebooks` | `→ int` (property) | 码本层数 |
+| `codebook_size` | `→ int` (property) | 每层码本大小 |
+
+**默认方法**:
+
+#### `generate(semantic_embeddings_dir, collaborative_embeddings_dir, output_dir, config) → Dataset`
+
+完整管道：train → encode → 碰撞消解 → 构建 SID map → 保存。
+
+```python
+from saegenrec.modeling.tokenizers.base import get_item_tokenizer
+
+tokenizer = get_item_tokenizer("rqvae")
+sid_map = tokenizer.generate(
+    semantic_embeddings_dir="data/interim/amazon2015/Beauty/item_semantic_embeddings",
+    collaborative_embeddings_dir=None,
+    output_dir="data/processed/amazon2015/Beauty",
+    config={"num_codebooks": 4, "codebook_size": 256, ...},
+)
+```
+
+#### `register_item_tokenizer(name)` / `get_item_tokenizer(name, **kwargs)`
+
+注册和获取 ItemTokenizer 的辅助函数。
+
+#### 内置 Tokenizer
+
+| 注册名 | 类 | 说明 |
+|--------|-----|------|
+| `rqvae` | `RQVAETokenizer` | MLP 编码器 + 残差向量量化，PyTorch Lightning 训练 |
+| `rqkmeans` | `RQKMeansTokenizer` | 逐层残差 KMeans，基于 FAISS + k-means-constrained |
+
+---
+
+#### `resolve_collisions(codes, strategy) → list[list[int]]`
+
+碰撞消解函数。将 `(N, num_codebooks)` 的 codes 张量处理为唯一的 SID 列表。
+
+**策略**: `"append_level"`（追加消歧层）、`"sinkhorn"`（当前回退到 append_level）。
+
+---
+
+### `saegenrec.modeling.tokenizers.models`
+
+#### `RQVAEModel` (`pl.LightningModule`)
+
+残差向量量化变分自编码器。
+
+**构造参数**: `input_dim`, `hidden_dim`, `latent_dim`, `num_codebooks`, `codebook_size`, `ema_decay`, `dead_code_threshold`
+
+**防坍缩机制**:
+
+- **数据初始化**: 首个 batch 时用编码器输出初始化码本
+- **EMA 更新**: 指数移动平均更新码本向量
+- **死码替换**: 使用次数低于阈值的码本条目从当前 batch 重采样
+
+---
+
+### `saegenrec.modeling.sft`
+
+#### `SFTTaskBuilder` (ABC)
+
+SFT 任务构建器抽象基类。
+
+**抽象方法/属性**:
+
+| 方法/属性 | 签名 | 说明 |
+|----------|------|------|
+| `task_type` | `→ str` (property) | 任务类型标识 |
+| `build` | `(stage1_dir, stage2_dir, sid_map, config) → Dataset` | 构建 SFT 数据集 |
+
+**内置方法**:
+
+| 方法 | 说明 |
+|------|------|
+| `load_templates(template_file)` | 从 YAML 加载当前 task_type 的 prompt 模板 |
+
+#### `register_sft_task(name)` / `get_sft_task_builder(name)`
+
+注册和获取 SFTTaskBuilder 的辅助函数。
+
+#### 内置任务
+
+| 注册名 | 类 | 说明 |
+|--------|-----|------|
+| `seqrec` | `SeqRecTaskBuilder` | 序列推荐：优先使用滑动窗口增强数据 |
+| `item2index` | `Item2IndexTaskBuilder` | 物品标题 → SID |
+| `index2item` | `Index2ItemTaskBuilder` | SID → 物品标题 |
+
+#### `SFTDatasetBuilder`
+
+多任务 SFT 数据编排器。
+
+```python
+from saegenrec.modeling.sft.builder import SFTDatasetBuilder
+
+builder = SFTDatasetBuilder()
+merged_ds = builder.build(stage1_dir, stage2_dir, sid_map, output_dir, config)
+```
+
+**功能**: 调用各 task builder → 合并 → shuffle → 保存。支持 `task_weights` 降采样。
+
+---
+
+### `saegenrec.modeling.genrec`
+
+#### `GenRecModel` (ABC)
+
+生成式推荐模型抽象基类。
+
+**抽象方法**:
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `train` | `(dataset, training_args) → dict` | 训练模型 |
+| `generate` | `(input_text, **kwargs) → list[str]` | 生成推荐结果 |
+| `evaluate` | `(dataset, metrics) → dict[str, float]` | 评估模型 |
+| `save_pretrained` | `(path) → None` | 保存模型 |
+| `from_pretrained` | `(path, **kwargs) → GenRecModel` | 加载模型（classmethod） |
+
+#### `register_genrec_model(name)` / `get_genrec_model(name, **kwargs)`
+
+注册和获取 GenRecModel 的辅助函数。
+
+#### `GenRecConfig`
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `base_model_name` | str | `"Qwen/Qwen2.5-0.5B"` | 基座模型名 |
+| `lora_enabled` | bool | `True` | 是否启用 LoRA |
+| `lora_r` | int | `16` | LoRA 秩 |
+| `lora_alpha` | int | `32` | LoRA alpha |
+| `lora_target_modules` | list[str] \| None | `None` | LoRA 目标模块 |
+| `training_strategy` | str | `"sft"` | 训练策略（sft / rl） |
+| `sid_tokens_path` | str \| None | `None` | SID token 文件路径 |
+
+---
+
+### `saegenrec.modeling.decoding`
+
+#### `SIDTrie`
+
+基于前缀树的 SID 搜索结构，用于约束解码。
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `insert` | `(token_ids: list[int]) → None` | 插入一个 SID 序列 |
+| `search_prefix` | `(prefix: list[int]) → list[int]` | 给定前缀返回合法的下一步 token ID |
+| `from_sid_map` | `(sid_map, tokenizer) → SIDTrie` | 从 item_sid_map 构建（classmethod） |
+
+```python
+from saegenrec.modeling.decoding.trie import SIDTrie
+from datasets import load_from_disk
+from transformers import AutoTokenizer
+
+sid_map = load_from_disk("data/processed/amazon2015/Beauty/item_sid_map")
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.5B")
+trie = SIDTrie.from_sid_map(sid_map, tokenizer)
+```
+
+#### `SIDConstrainedLogitsProcessor`
+
+HuggingFace `LogitsProcessor` 子类，在 LLM 生成时将非法 SID token 的 logits 设为 `-inf`。
+
+```python
+from saegenrec.modeling.decoding.constrained import SIDConstrainedLogitsProcessor
+
+processor = SIDConstrainedLogitsProcessor(
+    trie=trie,
+    sid_begin_token_id=tokenizer.convert_tokens_to_ids("<|sid_begin|>"),
+    sid_end_token_id=tokenizer.convert_tokens_to_ids("<|sid_end|>"),
+)
+```

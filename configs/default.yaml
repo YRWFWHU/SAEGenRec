@@ -28,26 +28,26 @@ semantic_embedding:
   batch_size: 256
   device: "cuda"
 
-collaborative_embedding:
-  enabled: true
-  name: "sasrec"
-  loss_type: "BPR"
-  hidden_size: 64
-  num_layers: 2
-  num_heads: 2
-  max_seq_len: 20
-  dropout: 0.2
-  learning_rate: 0.001
-  batch_size: 2048
-  num_epochs: 200
-  eval_top_k: [5, 10, 20]
-  device: "cuda"
-  seed: 42
+# collaborative_embedding:
+#   enabled: true
+#   name: "sasrec"
+#   loss_type: "BPR"
+#   hidden_size: 64
+#   num_layers: 2
+#   num_heads: 2
+#   max_seq_len: 20
+#   dropout: 0.2
+#   learning_rate: 0.001
+#   batch_size: 2048
+#   num_epochs: 200
+#   eval_top_k: [5, 10, 20]
+#   device: "cuda"
+#   seed: 42
 
 item_tokenizer:
-  enabled: false
+  enabled: true
   name: "rqvae"
-  num_codebooks: 4
+  num_codebooks: 8
   codebook_size: 256
   collision_strategy: "append_level"
   params:
@@ -57,6 +57,24 @@ item_tokenizer:
     epochs: 100
     batch_size: 512
     device: "cuda"
+
+  # --- SAE tokenizer example ---
+  # To use SAE instead of RQ-VAE, change name to "sae":
+  
+  # name: "sae"
+  # num_codebooks: 8                   # → top_k (number of SID codes)
+  # codebook_size: 4096                # → d_sae (concept vocabulary size)
+  # params:
+  #   # d_sae: 8192                    # explicit override for codebook_size
+  #   # top_k: 8                       # explicit override for num_codebooks
+  #   learning_rate: 0.001
+  #   epochs: 100
+  #   batch_size: 2048
+  #   device: "cuda"
+  #   l0_coefficient: 0.001
+  #   jumprelu_bandwidth: 0.05
+  #   jumprelu_init_threshold: 0.01
+  #   seed: 42
 
 sft_builder:
   enabled: false
